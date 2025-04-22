@@ -1,0 +1,444 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import pandas as pd
+import matplotlib.dates as mdates
+from datetime import datetime, timedelta, time, date
+import os 
+
+os.chdir("C:/Users/Chloe Cheung/OneDrive/Desktop/Data Collection/Device")
+print("New Working Directory:", os.getcwd())
+print("Data Folder Contents:", os.listdir("Panoramic"))
+
+geneactiv_left_path = "GENEActiv/Device__109802_2025-03-21 14-08-22.csv"
+geneactiv_right_path = "GENEActiv/Device__109803_2025-03-21 14-08-22.csv"
+
+actigraph_left_path = "Actigraph LEAP/DEVICE_STM2E24241419 (2025-03-21)RAW.csv"
+actigraph_right_path = "Actigraph LEAP/DEVICE_STM2E24248872 (2025-03-21)RAW.csv"
+
+panoramic_left_path = "Panoramic/SAMPLES_UCL_NoctScratch001_Device_baseline_LEFT-WRIST_PANO-X003_HE_ACC.csv"
+panoramic_right_path = "Panoramic/SAMPLES_UCL_NoctScratch001_Device_baseline_RIGHT-WRIST_PANO-X004_HE_ACC.csv"
+
+confounding_path = "Device Timestamp Ref.xlsx"
+
+import pandas as pd
+from datetime import datetime, date, time
+
+def get_sync_boundaries(file_path):
+    """
+    Extract sync boundaries from the Excel file.
+    The sync start time is taken from column 8 (index 7) of the first Sync row,
+    and the sync end time is taken from column 9 (index 8) of the second Sync row.
+    
+    Parameters:
+    -----------
+    file_path : str
+        Path to the timestamp Excel file.
+    
+    Returns:
+    --------
+    tuple:
+        (sync_start, sync_end) as pandas Timestamp objects.
+    """
+    # Read the file without a header to locate the header row.
+    df = pd.read_excel(file_path, header=None)
+    header_row = None
+    for i, row in df.iterrows():
+        if 'Type' in row.values:
+            header_row = i
+            break
+    if header_row is None:
+        raise ValueError("Header row with 'Type' not found in the Excel file.")
+    
+    # Read the file again using the detected header row.
+    df = pd.read_excel(file_path, header=header_row)
+    
+    # Extract the Sync rows.
+    sync_rows = df[df['Type'] == 'Sync']
+    if len(sync_rows) < 2:
+        raise ValueError("Not enough sync rows found in the Excel file.")
+    
+    first_sync = sync_rows.iloc[0]
+    second_sync = sync_rows.iloc[1]
+    
+    # Extract the raw cell values.
+    raw_start = first_sync.iloc[7]
+    raw_end = second_sync.iloc[8]
+    print("Raw sync start value:", raw_start)
+    print("Raw sync end value:", raw_end)
+    
+    # Process the start time.
+    if isinstance(raw_start, time):
+        # Combine with a default date.
+        dt_start = datetime.combine(date(1900, 1, 1), raw_start)
+        sync_start = pd.Timestamp(dt_start)
+    elif isinstance(raw_start, str):
+        raw_start = raw_start.strip()
+        dt_start = datetime.strptime(raw_start, "%H:%M:%S")
+        sync_start = pd.Timestamp(dt_start)
+    else:
+        sync_start = pd.to_datetime(raw_start, errors='coerce')
+    
+    # Process the end time.
+    if isinstance(raw_end, time):
+        dt_end = datetime.combine(date(1900, 1, 1), raw_end)
+        sync_end = pd.Timestamp(dt_end)
+    elif isinstance(raw_end, str):
+        raw_end = raw_end.strip()
+        dt_end = datetime.strptime(raw_end, "%H:%M:%S")
+        sync_end = pd.Timestamp(dt_end)
+    else:
+        sync_end = pd.to_datetime(raw_end, errors='coerce')
+    
+    return sync_start, sync_end
+
+# Example usage:
+sync_start, sync_end = get_sync_boundaries("Device Timestamp Ref.xlsx")
+print("Sync Start Time:", sync_start)
+print("Sync End Time:", sync_end)
+
+def extract_confounding_timestamps(file_path):
+    """
+    Extract confounding timestamps from the Excel file by:
+      - Detecting the header row.
+      - Removing all rows before the first Sync row's start time (column 8)
+        and after the second Sync row's end time (column 9).
+      - Filtering for rows where "Type" equals "Confounding".
+    
+    Parameters:
+    -----------
+    file_path : str
+        Path to the timestamp Excel file.
+    
+    Returns:
+    --------
+    List of tuples:
+        Each tuple contains (start_time, end_time) for a confounding event.
+    """
+    # Read the file without a header to locate the header row.
+    df = pd.read_excel(file_path, header=None)
+    for i, row in df.iterrows():
+        if 'Type' in row.values:
+            header_row = i
+            break
+    
+    # Read the file again using the detected header row.
+    df = pd.read_excel(file_path, header=header_row)
+    
+    # Extract the Sync rows.
+    sync_rows = df[df['Type'] == 'Sync']
+    if len(sync_rows) < 2:
+        raise ValueError("Not enough sync rows found in the Excel file.")
+    
+    first_sync = sync_rows.iloc[0]
+    second_sync = sync_rows.iloc[1]
+    
+    # Get the boundary times:
+    boundary_start = first_sync.iloc[7]
+    boundary_end = second_sync.iloc[8]
+    
+    # Filter the dataframe to keep only rows with Start Time and Stop Time within the boundaries.
+    df_filtered = df[(df['Start Time'] >= boundary_start) & (df['Stop Time'] <= boundary_end)]
+    
+    # Filter rows where "Type" equals "Confounding"
+    confounding_df = df_filtered[df_filtered['Type'] == 'Confounding']
+    
+    # Extract timestamps as a list of tuples.
+    timestamps = []
+    for _, row in confounding_df.iterrows():
+        start_time = row['Start Time']
+        end_time = row['Stop Time']
+        timestamps.append((start_time, end_time))
+    
+    return timestamps
+
+def extract_geneactiv_data(file_path):
+    df = pd.read_csv(file_path, header=None, skiprows=100)
+    df.columns = ['timestamp', 'x', 'y', 'z', 'light', 'button', 'temperature'] + \
+                 [f'col_{i}' for i in range(7, len(df.columns))]
+    result_df = df[['timestamp', 'x', 'y', 'z']]
+    return result_df
+
+
+def extract_actigraph_data(file_path):
+    """
+    Extract ActiGraph accelerometer data from an Excel file at 64 Hz.
+    Creates a uniformly spaced timestamp index if the file's timestamps
+    lack sufficient fractional-second precision.
+
+    Parameters:
+    -----------
+    file_path : str
+        Path to the Excel file containing ActiGraph data.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with columns for timestamp, x, y, and z acceleration values,
+        sampled at 64 Hz.
+    """
+    
+    # Read the entire Excel file (no header) so we can parse metadata as needed.
+    # Adjust skiprows if your file structure differs.
+    df = pd.read_csv(file_path, header=None, skiprows=12)
+
+    # The first row after skipping might contain the first timestamp.
+    # We'll treat that row as "row 0" for data, then the rest are subsequent samples.
+    # If your file structure differs, adjust these indexing steps accordingly.
+    df = df.reset_index(drop=True)
+    
+    # The very first data row (df.iloc[0]) should contain the first timestamp in column 0.
+    start_time_str = df.iloc[0, 0]
+    start_time = pd.to_datetime(start_time_str, errors='coerce')
+
+    # The remainder of the rows are the actual acceleration samples.
+    data_df = df.iloc[1:].reset_index(drop=True)
+    
+    # Create a uniformly spaced time index at 64 Hz.
+    # 64 Hz => 1 sample every 1/64 s = 0.015625 seconds.
+    # We'll generate as many timestamps as there are rows in data_df.
+    n_samples = len(data_df)
+    # 1 second / 64 => 15.625 ms => 15625000 ns
+    freq_ns = int(1e9 / 64)  # 15,625,000 ns
+    time_index = pd.date_range(start=start_time, periods=n_samples, freq=f'{freq_ns}N')
+    
+    # Build the result DataFrame
+    result_df = pd.DataFrame()
+    result_df['timestamp'] = time_index
+    
+    # Extract the X, Y, Z columns (columns 1, 2, 3 in the Excel file)
+    result_df['x'] = pd.to_numeric(data_df.iloc[:, 1], errors='coerce')
+    result_df['y'] = pd.to_numeric(data_df.iloc[:, 2], errors='coerce')
+    result_df['z'] = pd.to_numeric(data_df.iloc[:, 3], errors='coerce')
+    
+    # Drop rows with NaN values (in case of empty cells)
+    result_df = result_df.dropna()
+
+    return result_df
+
+def extract_panoramic_data(file_path):
+    """
+    Extract and clean panoramic accelerometer data from a CSV file.
+
+    The function reads a CSV file and cleans the data by:
+    - Converting the timestamp column to datetime.
+    - Dividing the x, y, and z acceleration values by 1000.
+    - Inverting the y and z values (i.e., negative values become positive and vice versa).
+
+    Parameters:
+    -----------
+    file_path : str
+        Path to the CSV file containing panoramic accelerometer data.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with cleaned data containing 'timestamp', 'x', 'y', and 'z' columns.
+    """
+    
+    import pandas as pd
+
+    # Read the CSV file (assuming it includes headers for 'timestamp', 'x', 'y', 'z')
+    df = pd.read_csv(file_path, header=None)
+    df.columns = ['', 'timestamp', 'x', 'y', 'z'] + \
+                 [f'col_{i}' for i in range(5, len(df.columns))]
+    
+    # Convert the 'timestamp' column to datetime
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    
+    # Clean the acceleration data:
+    # Divide x, y, z by 1000 and invert the y and z values.
+    df['x'] = df['x'] / 1000
+    df['y'] = (df['y'] / 1000) 
+    df['z'] = (df['z'] / 1000) 
+
+    # Return a DataFrame with the cleaned columns.
+    return df[['timestamp', 'x', 'y', 'z']]
+
+    return result_df
+
+# Extract confounding timestamps for each hand.
+# Since the hand info is in column 7, we use "L" for left and "R" for right.
+confounding_timestamps_geneactiv_L = extract_confounding_timestamps(confounding_path)
+confounding_timestamps_geneactiv_R = extract_confounding_timestamps(confounding_path)
+
+confounding_timestamps_actigraph_L = extract_confounding_timestamps(confounding_path)
+confounding_timestamps_actigraph_R = extract_confounding_timestamps(confounding_path)
+
+confounding_timestamps_panoramic_L = extract_confounding_timestamps(confounding_path)
+confounding_timestamps_panoramic_R = extract_confounding_timestamps(confounding_path)
+
+# BASE CODE Reading genactiv and actigraph data
+geneactiv_data_L = extract_geneactiv_data(geneactiv_left_path)
+actigraph_data_L = extract_actigraph_data(actigraph_left_path)
+panoramic_data_L = extract_panoramic_data(panoramic_left_path)
+
+geneactiv_data_R = extract_geneactiv_data(geneactiv_right_path)
+actigraph_data_R = extract_actigraph_data(actigraph_right_path)
+panoramic_data_R = extract_panoramic_data(panoramic_right_path)
+
+def fix_timestamp(ts):
+    """
+    Helper function to fix timestamp strings (e.g., "2025-02-27 17:02:00:000" -> "2025-02-27 17:02:00.000").
+    """
+    if isinstance(ts, str) and ts.count(':') == 3:
+        parts = ts.rsplit(":", 1)
+        return parts[0] + "." + parts[1]
+    return ts
+
+def visualize_data_with_confounding_windows(
+    accel_data,
+    confounding_timestamps,
+    sync_start,
+    sync_end,
+    device_name,
+    figure_size=(15, 8),
+    line_colors=('tab:orange', 'tab:green', 'tab:blue'),
+    confounding_color='orange',
+    legend_bg_color='white',
+    legend_text_color='black'
+):
+    """
+    Plot X, Y, Z accelerometer data over time and highlight confounding windows.
+    Only data within the provided sync_start and sync_end boundaries will be visualized.
+    
+    The sync boundaries (and confounding window times) are adjusted so that their date
+    matches that of the sensor data.
+    
+    Parameters:
+    -----------
+    accel_data : pandas.DataFrame
+        DataFrame containing columns for:
+        'timestamp', 'x', 'y', 'z'
+    confounding_timestamps : list of tuples
+        List of (start_time, end_time) tuples representing confounding periods.
+        These times are assumed to be time-only (or have a default date like 1900-01-01).
+    sync_start : datetime or pandas Timestamp
+        The sync start time (typically with a default date like 1900-01-01).
+    sync_end : datetime or pandas Timestamp
+        The sync end time (typically with a default date like 1900-01-01).
+    device_name : str
+        Name of the device (e.g., 'GeneActiv NS026 (L)' or 'Actigraph LEAP NS026 (R)')
+    figure_size : tuple of float, optional
+        (width, height) in inches for the figure, default: (15, 8)
+    line_colors : tuple of str, optional
+        Colors for the X, Y, Z lines (in that order). Default: ('red', 'green', 'blue')
+    confounding_color : str, optional
+        Color to shade the confounding window. Default: 'red'
+    legend_bg_color : str, optional
+        Background color of the legend box. Default: 'white'
+    legend_text_color : str, optional
+        Color of the legend text. Default: 'black'
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        The figure containing the plot.
+    """
+    import pandas as pd
+    from datetime import datetime, date
+
+    data_df = accel_data.copy()
+    
+    # Ensure the timestamp column is in datetime format.
+    if not pd.api.types.is_datetime64_any_dtype(data_df['timestamp']):
+        try:
+            data_df['timestamp'] = pd.to_datetime(data_df['timestamp'])
+        except Exception:
+            data_df['timestamp'] = pd.to_datetime(data_df['timestamp'].astype(str).apply(fix_timestamp))
+    
+    # Determine the date from the sensor data (use the first timestamp).
+    if len(data_df) > 0:
+        base_date = data_df['timestamp'].iloc[0].date()
+    else:
+        base_date = date.today()
+    
+    # Adjust sync boundaries: if their date is the default (e.g., 1900-01-01), combine with base_date.
+    if sync_start.year == 1900:
+        sync_start_adj = pd.Timestamp(datetime.combine(base_date, sync_start.time()))
+    else:
+        sync_start_adj = sync_start
+    if sync_end.year == 1900:
+        sync_end_adj = pd.Timestamp(datetime.combine(base_date, sync_end.time()))
+    else:
+        sync_end_adj = sync_end
+
+    # Filter the data to only include rows within the adjusted sync boundaries.
+    data_df = data_df[(data_df['timestamp'] >= sync_start_adj) & (data_df['timestamp'] <= sync_end_adj)]
+    
+    fig, ax = plt.subplots(figsize=figure_size)
+    
+    # Plot X, Y, Z lines with customizable colors.
+    timestamps = data_df['timestamp'].to_numpy()
+    ax.plot(timestamps, data_df['x'], label='X-axis', alpha=0.8, color=line_colors[0])
+    ax.plot(timestamps, data_df['y'], label='Y-axis', alpha=0.8, color=line_colors[1])
+    ax.plot(timestamps, data_df['z'], label='Z-axis', alpha=0.8, color=line_colors[2])
+    
+    # Overlay confounding windows.
+    # Adjust each confounding window to have the base_date if its date is the default.
+    for i, (start_time, end_time) in enumerate(confounding_timestamps):
+        # Convert start_time
+        st = pd.to_datetime(fix_timestamp(start_time)) if not isinstance(start_time, time) else start_time
+        if isinstance(st, datetime) and st.year == 1900:
+            st = datetime.combine(base_date, st.time())
+        elif isinstance(st, time):
+            st = datetime.combine(base_date, st)
+        else:
+            st = pd.Timestamp(st)
+            
+        # Convert end_time
+        et = pd.to_datetime(fix_timestamp(end_time)) if not isinstance(end_time, time) else end_time
+        if isinstance(et, datetime) and et.year == 1900:
+            et = datetime.combine(base_date, et.time())
+        elif isinstance(et, time):
+            et = datetime.combine(base_date, et)
+        else:
+            et = pd.Timestamp(et)
+        
+        ax.axvspan(
+            st, 
+            et, 
+            alpha=0.3, 
+            color=confounding_color,
+            label=f"confounding {i+1}" if i == 0 else "_nolegend_"
+        )
+    
+    # Customize legend appearance.
+    leg = ax.legend(loc='upper right')
+    leg.get_frame().set_facecolor(legend_bg_color)
+    for text in leg.get_texts():
+        text.set_color(legend_text_color)
+    
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+    plt.xticks(rotation=0)
+    plt.xlabel('Time')
+    plt.ylabel('Acceleration')
+    plt.title(f'Accelerometer Data for {device_name} with confounding Windows')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    return fig
+
+## Visualising data window for left handed confounding
+# Visualizing data with confounding windows
+fig = visualize_data_with_confounding_windows(geneactiv_data_L, confounding_timestamps_geneactiv_L, sync_start, sync_end, "GENEActiv - NS026 (L)")
+plt.show()
+
+# Visualizing data with confounding windows
+fig = visualize_data_with_confounding_windows(actigraph_data_L, confounding_timestamps_actigraph_L, sync_start, sync_end, "Actigraph LEAP - NS026 (L)")
+plt.show()
+
+fig = visualize_data_with_confounding_windows(panoramic_data_L, confounding_timestamps_panoramic_L, sync_start, sync_end, "Panoramic - NS026 (L)")
+plt.show()
+
+## Visualising data window for right handed confounding
+# Visualizing data with confounding windows
+fig = visualize_data_with_confounding_windows(geneactiv_data_R, confounding_timestamps_geneactiv_R, sync_start, sync_end, "GENEActiv - NS026 (R)")
+plt.show()
+
+# Visualizing data with confounding windows
+fig = visualize_data_with_confounding_windows(actigraph_data_R, confounding_timestamps_actigraph_R, sync_start, sync_end, "Actigraph LEAP - NS026 (R)")
+plt.show()
+
+fig = visualize_data_with_confounding_windows(panoramic_data_R, confounding_timestamps_panoramic_R, sync_start, sync_end, "Panoramic - NS026 (R)")
+plt.show()
