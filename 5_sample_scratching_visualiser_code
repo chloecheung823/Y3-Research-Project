@@ -1,0 +1,1867 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[2]:
+
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import pandas as pd
+import matplotlib.dates as mdates
+from datetime import datetime, timedelta, time, date
+import os 
+
+os.chdir("C:/Users/Chloe Cheung/OneDrive/Desktop/Data Collection/NS024")
+print("New Working Directory:", os.getcwd())
+
+
+# In[3]:
+
+
+geneactiv_left_path = "GENEActiv/NS024_left wrist_109802_2025-02-27 17-52-44.csv"
+geneactiv_right_path = "GENEActiv/NS024_right wrist_109803_2025-02-27 17-52-44.csv"
+
+actigraph_left_path = "Actigraph LEAP/NS024_STM2E24241419 (2025-02-27)RAW.csv"
+actigraph_right_path = "Actigraph LEAP/NS024_STM2E24248872 (2025-02-27)RAW.csv"
+
+panoramic_left_path = "Panoramic/SAMPLES_UCL_NoctScratch001_NS024_baseline_LEFT-WRIST_PANO-X003_HE_ACC.csv"
+panoramic_right_path = "Panoramic/SAMPLES_UCL_NoctScratch001_NS024_baseline_RIGHT-WRIST_PANO-X004_HE_ACC.csv"
+
+scratching_path = "NS024 Timestamp Ref.xlsx"
+
+
+
+# In[4]:
+
+
+import pandas as pd
+from datetime import datetime, date, time
+
+def get_sync_boundaries(file_path):
+    """
+    Extract sync boundaries from the Excel file.
+    The sync start time is taken from column 8 (index 7) of the first Sync row,
+    and the sync end time is taken from column 9 (index 8) of the second Sync row.
+    
+    Parameters:
+    -----------
+    file_path : str
+        Path to the timestamp Excel file.
+    
+    Returns:
+    --------
+    tuple:
+        (sync_start, sync_end) as pandas Timestamp objects.
+    """
+    # Read the file without a header to locate the header row.
+    df = pd.read_excel(file_path, header=None)
+    header_row = None
+    for i, row in df.iterrows():
+        if 'Type' in row.values:
+            header_row = i
+            break
+    if header_row is None:
+        raise ValueError("Header row with 'Type' not found in the Excel file.")
+    
+    # Read the file again using the detected header row.
+    df = pd.read_excel(file_path, header=header_row)
+    
+    # Extract the Sync rows.
+    sync_rows = df[df['Type'] == 'Sync']
+    if len(sync_rows) < 2:
+        raise ValueError("Not enough sync rows found in the Excel file.")
+    
+    first_sync = sync_rows.iloc[0]
+    second_sync = sync_rows.iloc[1]
+    
+    # Extract the raw cell values.
+    raw_start = first_sync.iloc[7]
+    raw_end = second_sync.iloc[8]
+    print("Raw sync start value:", raw_start)
+    print("Raw sync end value:", raw_end)
+    
+    # Process the start time.
+    if isinstance(raw_start, time):
+        # Combine with a default date.
+        dt_start = datetime.combine(date(1900, 1, 1), raw_start)
+        sync_start = pd.Timestamp(dt_start)
+    elif isinstance(raw_start, str):
+        raw_start = raw_start.strip()
+        dt_start = datetime.strptime(raw_start, "%H:%M:%S")
+        sync_start = pd.Timestamp(dt_start)
+    else:
+        sync_start = pd.to_datetime(raw_start, errors='coerce')
+    
+    # Process the end time.
+    if isinstance(raw_end, time):
+        dt_end = datetime.combine(date(1900, 1, 1), raw_end)
+        sync_end = pd.Timestamp(dt_end)
+    elif isinstance(raw_end, str):
+        raw_end = raw_end.strip()
+        dt_end = datetime.strptime(raw_end, "%H:%M:%S")
+        sync_end = pd.Timestamp(dt_end)
+    else:
+        sync_end = pd.to_datetime(raw_end, errors='coerce')
+    
+    return sync_start, sync_end
+
+# Example usage:
+sync_start, sync_end = get_sync_boundaries("NS024 Timestamp Ref.xlsx")
+print("Sync Start Time:", sync_start)
+print("Sync End Time:", sync_end)
+
+
+# In[5]:
+
+
+# Simplified extraction function using column 7 for hand indication.
+def extract_scratching_timestamps(file_path, hand_indicator):
+    """
+    Extract scratching timestamps from the Excel file, filtering rows based on the hand indicator in column 7.
+    
+    Parameters:
+    -----------
+    file_path : str
+        Path to the timestamp Excel file.
+    hand_indicator : str
+        A string (e.g., "L" or "R") indicating the hand.
+    
+    Returns:
+    --------
+    List of tuples:
+        Each tuple contains (start_time, end_time) for a scratching event.
+    """
+    # Read the file without a header to locate the header row.
+    df = pd.read_excel(file_path, header=None)
+    for i, row in df.iterrows():
+        if 'Type' in row.values:
+            header_row = i
+            break
+    
+    # Read the file again using the detected header row.
+    df = pd.read_excel(file_path, header=header_row)
+    
+    # Filter rows by the hand indicator in column 7 (0-indexed column 6)
+    df = df[df.iloc[:, 6] == hand_indicator]
+    
+    # Filter rows where "Type" equals "Scratching"
+    scratching_df = df[df['Type'] == 'Scratching']
+    
+    timestamps = []
+    for _, row in scratching_df.iterrows():
+        start_time = row['Start Time']
+        end_time = row['Stop Time']
+        timestamps.append((start_time, end_time))
+    
+    return timestamps
+
+
+def extract_geneactiv_data(file_path):
+    df = pd.read_csv(file_path, header=None, skiprows=100)
+    df.columns = ['timestamp', 'x', 'y', 'z', 'light', 'button', 'temperature'] + \
+                 [f'col_{i}' for i in range(7, len(df.columns))]
+    result_df = df[['timestamp', 'x', 'y', 'z']]
+    return result_df
+
+
+def extract_actigraph_data(file_path):
+    """
+    Extract ActiGraph accelerometer data from an Excel file at 64 Hz.
+    Creates a uniformly spaced timestamp index if the file's timestamps
+    lack sufficient fractional-second precision.
+
+    Parameters:
+    -----------
+    file_path : str
+        Path to the Excel file containing ActiGraph data.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with columns for timestamp, x, y, and z acceleration values,
+        sampled at 64 Hz.
+    """
+    
+    # Read the entire Excel file (no header) so we can parse metadata as needed.
+    # Adjust skiprows if your file structure differs.
+    df = pd.read_csv(file_path, header=None, skiprows=12)
+
+    # The first row after skipping might contain the first timestamp.
+    # We'll treat that row as "row 0" for data, then the rest are subsequent samples.
+    # If your file structure differs, adjust these indexing steps accordingly.
+    df = df.reset_index(drop=True)
+    
+    # The very first data row (df.iloc[0]) should contain the first timestamp in column 0.
+    start_time_str = df.iloc[0, 0]
+    start_time = pd.to_datetime(start_time_str, errors='coerce')
+
+    # The remainder of the rows are the actual acceleration samples.
+    data_df = df.iloc[1:].reset_index(drop=True)
+    
+    # Create a uniformly spaced time index at 64 Hz.
+    # 64 Hz => 1 sample every 1/64 s = 0.015625 seconds.
+    # We'll generate as many timestamps as there are rows in data_df.
+    n_samples = len(data_df)
+    # 1 second / 64 => 15.625 ms => 15625000 ns
+    freq_ns = int(1e9 / 64)  # 15,625,000 ns
+    time_index = pd.date_range(start=start_time, periods=n_samples, freq=f'{freq_ns}N')
+    
+    # Build the result DataFrame
+    result_df = pd.DataFrame()
+    result_df['timestamp'] = time_index
+    
+    # Extract the X, Y, Z columns (columns 1, 2, 3 in the Excel file)
+    result_df['x'] = pd.to_numeric(data_df.iloc[:, 1], errors='coerce')
+    result_df['y'] = pd.to_numeric(data_df.iloc[:, 2], errors='coerce')
+    result_df['z'] = pd.to_numeric(data_df.iloc[:, 3], errors='coerce')
+    
+    # Drop rows with NaN values (in case of empty cells)
+    result_df = result_df.dropna()
+
+    return result_df
+
+def extract_panoramic_data(file_path):
+    """
+    Extract and clean panoramic accelerometer data from a CSV file.
+
+    The function reads a CSV file and cleans the data by:
+    - Converting the timestamp column to datetime.
+    - Dividing the x, y, and z acceleration values by 1000.
+    - Inverting the y and z values (i.e., negative values become positive and vice versa).
+
+    Parameters:
+    -----------
+    file_path : str
+        Path to the CSV file containing panoramic accelerometer data.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        DataFrame with cleaned data containing 'timestamp', 'x', 'y', and 'z' columns.
+    """
+    
+    import pandas as pd
+
+    # Read the CSV file (assuming it includes headers for 'timestamp', 'x', 'y', 'z')
+    df = pd.read_csv(file_path, header=None)
+    df.columns = ['', 'timestamp', 'x', 'y', 'z'] + \
+                 [f'col_{i}' for i in range(5, len(df.columns))]
+    
+    # Convert the 'timestamp' column to datetime
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    
+    # Clean the acceleration data:
+    # Divide x, y, z by 1000 and invert the y and z values.
+    df['x'] = df['x'] / 1000
+    df['y'] = (df['y'] / 1000) #* -1
+    df['z'] = (df['z'] / 1000) #* -1
+
+    # Return a DataFrame with the cleaned columns.
+    return df[['timestamp', 'x', 'y', 'z']]
+
+    return result_df
+
+
+# In[6]:
+
+
+# Extract scratching timestamps for each hand.
+# Since the hand info is in column 7, we use "L" for left and "R" for right.
+scratching_timestamps_geneactiv_L = extract_scratching_timestamps(scratching_path, "L")
+scratching_timestamps_geneactiv_R = extract_scratching_timestamps(scratching_path, "R")
+
+scratching_timestamps_actigraph_L = extract_scratching_timestamps(scratching_path, "L")
+scratching_timestamps_actigraph_R = extract_scratching_timestamps(scratching_path, "R")
+
+scratching_timestamps_panoramic_L = extract_scratching_timestamps(scratching_path, "L")
+scratching_timestamps_panoramic_R = extract_scratching_timestamps(scratching_path, "R")
+
+
+# In[7]:
+
+
+# BASE CODE Reading genactiv and actigraph data
+geneactiv_data_L = extract_geneactiv_data(geneactiv_left_path)
+actigraph_data_L = extract_actigraph_data(actigraph_left_path)
+panoramic_data_L = extract_panoramic_data(panoramic_left_path)
+
+geneactiv_data_R = extract_geneactiv_data(geneactiv_right_path)
+actigraph_data_R = extract_actigraph_data(actigraph_right_path)
+panoramic_data_R = extract_panoramic_data(panoramic_right_path)
+
+
+# In[8]:
+
+
+import pandas as pd
+from datetime import datetime, date, time, timedelta
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+def fix_timestamp(ts):
+    """
+    Helper function to fix timestamp strings (e.g., "2025-02-27 17:02:00:000" -> "2025-02-27 17:02:00.000").
+    """
+    if isinstance(ts, str) and ts.count(':') == 3:
+        parts = ts.rsplit(":", 1)
+        return parts[0] + "." + parts[1]
+    return ts
+
+def visualize_data_with_scratching_windows(
+    accel_data,
+    scratching_timestamps,
+    sync_start,
+    sync_end,
+    device_name,
+    figure_size=(30, 3),
+    line_colors=('tab:orange', 'tab:green', 'tab:blue'),
+    scratching_color='tab:cyan',
+    legend_bg_color='white',
+    legend_text_color='black'
+):
+    """
+    Plot X, Y, Z accelerometer data over time and highlight scratching windows.
+    Only data within the provided sync_start and sync_end boundaries will be visualized.
+    
+    The sync boundaries (and scratching window times) are adjusted so that their date
+    matches that of the sensor data.
+    
+    Parameters:
+    -----------
+    accel_data : pandas.DataFrame
+        DataFrame containing columns for:
+        'timestamp', 'x', 'y', 'z'
+    scratching_timestamps : list of tuples
+        List of (start_time, end_time) tuples representing scratching periods.
+        These times are assumed to be time-only (or have a default date like 1900-01-01).
+    sync_start : datetime or pandas Timestamp
+        The sync start time (typically with a default date like 1900-01-01).
+    sync_end : datetime or pandas Timestamp
+        The sync end time (typically with a default date like 1900-01-01).
+    device_name : str
+        Name of the device (e.g., 'GeneActiv NS024 (L)' or 'Actigraph LEAP NS024 (R)')
+    figure_size : tuple of float, optional
+        (width, height) in inches for the figure, default: (15, 8)
+    line_colors : tuple of str, optional
+        Colors for the X, Y, Z lines (in that order). Default: ('red', 'green', 'blue')
+    scratching_color : str, optional
+        Color to shade the scratching window. Default: 'red'
+    legend_bg_color : str, optional
+        Background color of the legend box. Default: 'white'
+    legend_text_color : str, optional
+        Color of the legend text. Default: 'black'
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        The figure containing the plot.
+    """
+    import pandas as pd
+    from datetime import datetime, date
+
+    data_df = accel_data.copy()
+    
+    # Ensure the timestamp column is in datetime format.
+    if not pd.api.types.is_datetime64_any_dtype(data_df['timestamp']):
+        try:
+            data_df['timestamp'] = pd.to_datetime(data_df['timestamp'])
+        except Exception:
+            data_df['timestamp'] = pd.to_datetime(data_df['timestamp'].astype(str).apply(fix_timestamp))
+    
+    # Determine the date from the sensor data (use the first timestamp).
+    if len(data_df) > 0:
+        base_date = data_df['timestamp'].iloc[0].date()
+    else:
+        base_date = date.today()
+    
+    # Adjust sync boundaries: if their date is the default (e.g., 1900-01-01), combine with base_date.
+    if sync_start.year == 1900:
+        sync_start_adj = pd.Timestamp(datetime.combine(base_date, sync_start.time()))
+    else:
+        sync_start_adj = sync_start
+    if sync_end.year == 1900:
+        sync_end_adj = pd.Timestamp(datetime.combine(base_date, sync_end.time()))
+    else:
+        sync_end_adj = sync_end
+
+    # Filter the data to only include rows within the adjusted sync boundaries.
+    data_df = data_df[(data_df['timestamp'] >= sync_start_adj) & (data_df['timestamp'] <= sync_end_adj)]
+    
+    fig, ax = plt.subplots(figsize=figure_size)
+    
+    # Plot X, Y, Z lines with customizable colors.
+    timestamps = data_df['timestamp'].to_numpy()
+    ax.plot(timestamps, data_df['x'], label='X-axis', alpha=0.8, color=line_colors[0])
+    ax.plot(timestamps, data_df['y'], label='Y-axis', alpha=0.8, color=line_colors[1])
+    ax.plot(timestamps, data_df['z'], label='Z-axis', alpha=0.8, color=line_colors[2])
+    
+    # Overlay scratching windows.
+    # Adjust each scratching window to have the base_date if its date is the default.
+    for i, (start_time, end_time) in enumerate(scratching_timestamps):
+        # Convert start_time
+        st = pd.to_datetime(fix_timestamp(start_time)) if not isinstance(start_time, time) else start_time
+        if isinstance(st, datetime) and st.year == 1900:
+            st = datetime.combine(base_date, st.time())
+        elif isinstance(st, time):
+            st = datetime.combine(base_date, st)
+        else:
+            st = pd.Timestamp(st)
+            
+        # Convert end_time
+        et = pd.to_datetime(fix_timestamp(end_time)) if not isinstance(end_time, time) else end_time
+        if isinstance(et, datetime) and et.year == 1900:
+            et = datetime.combine(base_date, et.time())
+        elif isinstance(et, time):
+            et = datetime.combine(base_date, et)
+        else:
+            et = pd.Timestamp(et)
+        
+        ax.axvspan(
+            st, 
+            et, 
+            alpha=0.4, 
+            color=scratching_color,
+            label=f"scratching {i+1}" if i == 0 else "_nolegend_"
+        )
+    
+    # Customize legend appearance.
+    leg = ax.legend(loc='upper right')
+    leg.get_frame().set_facecolor(legend_bg_color)
+    for text in leg.get_texts():
+        text.set_color(legend_text_color)
+    
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+    plt.xticks(rotation=0)
+    plt.xlabel('Time')
+    plt.ylabel('Acceleration')
+    plt.title(f'Accelerometer Data for {device_name} with scratching Windows', fontsize=15)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    return fig
+
+
+
+
+# In[9]:
+
+
+## Visualising data window for left handed scratching
+# Visualizing data with scratching windows
+fig = visualize_data_with_scratching_windows(geneactiv_data_L, scratching_timestamps_geneactiv_L, sync_start, sync_end, "GENEActiv - NS024 (L)")
+plt.show()
+
+# Visualizing data with scratching windows
+fig = visualize_data_with_scratching_windows(actigraph_data_L, scratching_timestamps_actigraph_L, sync_start, sync_end, "Actigraph LEAP - Participant A (L)")
+plt.show()
+
+# Visualizing data with scratching windows
+fig = visualize_data_with_scratching_windows(panoramic_data_L, scratching_timestamps_panoramic_L, sync_start, sync_end, "Panoramic - NS024 (L)")
+plt.show()
+
+
+# In[10]:
+
+
+## Visualising data window for right handed scratching
+# Visualizing data with scratching windows
+fig = visualize_data_with_scratching_windows(geneactiv_data_R, scratching_timestamps_geneactiv_R, sync_start, sync_end, "GENEActiv - NS024 (R)")
+plt.show()
+
+# Visualizing data with scratching windows
+fig = visualize_data_with_scratching_windows(actigraph_data_R, scratching_timestamps_actigraph_R, sync_start, sync_end, "Actigraph LEAP - Participant A (R)")
+plt.show()
+
+# Visualizing data with scratching windows
+fig = visualize_data_with_scratching_windows(panoramic_data_R, scratching_timestamps_panoramic_R, sync_start, sync_end, "Panoramic - NS024 (R)")
+plt.show()
+
+
+# In[11]:
+
+
+def visualize_specific_scratching_window(
+    accel_data,
+    scratching_timestamps,
+    window_indices,
+    device_name,
+    padding_seconds=1,
+    figure_size=(20, 4),
+    line_colors=('red', 'green', 'blue'),
+    scratching_color='tab:cyan'
+):
+    """
+    Visualize specific scratching windows from an accelerometer dataset (e.g., GeneActiv or Actigraph).
+    This version places all title info on a single line per subplot and does not use a separate suptitle.
+    You can customize line colors and the color of the scratching region.
+    
+    Parameters:
+    -----------
+    accel_data : pandas.DataFrame
+        DataFrame containing accelerometer data with columns for 'timestamp', 'x', 'y', and 'z'
+    scratching_timestamps : list of tuples
+        List of (start_time, end_time) tuples representing scratching periods
+    window_indices : list of int
+        Indices of scratching windows to visualize (0-based)
+    device_name : str
+        A descriptive name for the device/hand (e.g., 'GeneActiv - NS024 (L)' or 'Actigraph LEAP - NS024 (R)')
+    padding_seconds : int, optional
+        Number of seconds to show before and after the scratching window (default: 1)
+    figure_size : tuple of float, optional
+        (width, height) in inches for the figure (default: (24, 4))
+    line_colors : tuple of str, optional
+        Colors for the X, Y, Z lines, in that order (default: ('blue', 'green', 'purple'))
+    scratching_color : str, optional
+        Color to shade the scratching window (default: 'red')
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        Figure object containing the visualization
+    """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from datetime import datetime, timedelta, time, date
+    import numpy as np
+
+    # Make a copy to avoid modifying the original data
+    data_df = accel_data.copy()
+
+    # Preprocess timestamps if they are strings and use a colon before milliseconds
+    if not pd.api.types.is_datetime64_any_dtype(data_df['timestamp']):
+        data_df['timestamp'] = (
+            data_df['timestamp']
+            .astype(str)
+            .str.replace(r'(?<=\d{2}:\d{2}:\d{2}):', '.', regex=True)
+        )
+        data_df['timestamp'] = pd.to_datetime(data_df['timestamp'])
+
+    # Determine a base date from the first timestamp (in case some events are time-only)
+    base_date = None
+    if len(data_df) > 0:
+        first_ts = data_df['timestamp'].iloc[0]
+        if isinstance(first_ts, np.datetime64):
+            base_date = pd.Timestamp(first_ts).date()
+        else:
+            base_date = first_ts.date()
+    if base_date is None:
+        base_date = date.today()  # Fallback if no timestamps are available
+
+    # Create a figure with one subplot per selected window
+    n_windows = len(window_indices)
+    fig_width, fig_height = figure_size
+    total_fig_height = fig_height * n_windows
+    fig, axes = plt.subplots(
+        n_windows, 1, figsize=(fig_width, total_fig_height), sharex=False
+    )
+    if n_windows == 1:
+        axes = [axes]
+
+    # Process each selected window
+    for i, window_idx in enumerate(window_indices):
+        if window_idx < 0 or window_idx >= len(scratching_timestamps):
+            print(f"Warning: Window index {window_idx} is out of range. Skipping.")
+            continue
+
+        # Extract the start/end times for this window
+        start_time, end_time = scratching_timestamps[window_idx]
+
+        # Convert start_time to a datetime
+        if isinstance(start_time, time):
+            start_datetime = datetime.combine(base_date, start_time)
+        elif isinstance(start_time, pd.Timestamp):
+            start_datetime = start_time
+        elif isinstance(start_time, str):
+            start_datetime = pd.to_datetime(start_time)
+        else:
+            start_datetime = pd.to_datetime(start_time)
+
+        # Convert end_time to a datetime
+        if isinstance(end_time, time):
+            end_datetime = datetime.combine(base_date, end_time)
+        elif isinstance(end_time, pd.Timestamp):
+            end_datetime = end_time
+        elif isinstance(end_time, str):
+            end_datetime = pd.to_datetime(end_time)
+        else:
+            end_datetime = pd.to_datetime(end_time)
+
+        # Apply padding
+        padded_start = start_datetime - timedelta(seconds=padding_seconds)
+        padded_end = end_datetime + timedelta(seconds=padding_seconds)
+
+        # Filter data for this window (with padding)
+        window_data = data_df[
+            (data_df['timestamp'] >= padded_start) &
+            (data_df['timestamp'] <= padded_end)
+        ]
+
+        if len(window_data) == 0:
+            print(f"Warning: No data found for window {window_idx}. Skipping.")
+            continue
+
+        # Convert to numpy arrays for plotting
+        timestamps = window_data['timestamp'].to_numpy()
+        x_values = window_data['x'].to_numpy()
+        y_values = window_data['y'].to_numpy()
+        z_values = window_data['z'].to_numpy()
+
+        # Plot
+        ax = axes[i]
+        ax.plot(timestamps, x_values, label='X-axis', alpha=0.8, color=line_colors[0])
+        ax.plot(timestamps, y_values, label='Y-axis', alpha=0.8, color=line_colors[1])
+        ax.plot(timestamps, z_values, label='Z-axis', alpha=0.8, color=line_colors[2])
+
+        # Overlay a semi-transparent region for the actual scratching period
+        ax.axvspan(start_datetime, end_datetime, alpha=0.15, color=scratching_color, label='Scratching')
+
+        # Vertical lines at the start/end of the scratching period
+        ax.axvline(x=start_datetime, color=scratching_color, linestyle='--', alpha=0.7)
+        ax.axvline(x=end_datetime, color=scratching_color, linestyle='--', alpha=0.7)
+
+        # Format time axis
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        ax.tick_params(axis='x', rotation=0)
+
+        # Single-line title for each subplot
+        ax.set_title(
+            f"Accelerometer Data for {device_name} - "
+            f"Scratching Window {window_idx+1} ({start_datetime.strftime('%H:%M:%S')} - {end_datetime.strftime('%H:%M:%S')})",
+            fontsize=12
+        )
+
+        # Y-Label and optionally an X-Label on the last subplot
+        ax.set_ylabel('Acceleration')
+        if i == n_windows - 1:
+            ax.set_xlabel('Time')
+
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+        # Annotate the padded regions
+        y_pos = ax.get_ylim()[1] * 0.9
+        ax.annotate(
+            'Pre-scratching',
+            (padded_start + timedelta(seconds=padding_seconds / 2), y_pos),
+            ha='center', color='red', alpha=0.9
+        )
+        ax.annotate(
+            'Post-scratching',
+            (end_datetime + timedelta(seconds=padding_seconds / 2), y_pos),
+            ha='center', color='red', alpha=0.9
+        )
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+
+    return fig
+
+
+# In[12]:
+
+
+# Visualising specific scratching window + some padding around window
+plt.close('all')  # Close all existing figures
+fig = visualize_specific_scratching_window(geneactiv_data_L, scratching_timestamps_geneactiv_L, [3], "GENEActiv - NS024 (L)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(actigraph_data_L, scratching_timestamps_actigraph_L, [3], "Actigraph LEAP - NS024 (L)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(panoramic_data_L, scratching_timestamps_panoramic_L, [3], "Panoramic - NS024 (L)", padding_seconds=1)
+plt.show()
+
+
+
+# In[13]:
+
+
+# Visualising specific scratching window + some padding around window
+plt.close('all')  # Close all existing figures
+fig = visualize_specific_scratching_window(geneactiv_data_R, scratching_timestamps_geneactiv_R, [0], "GENEActiv - NS024 (R)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(actigraph_data_R, scratching_timestamps_actigraph_R, [0], "Actigraph LEAP - Participant A (R)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(panoramic_data_R, scratching_timestamps_panoramic_R, [0], "Panoramic - NS024 (R)", padding_seconds=1)
+plt.show()
+
+
+# In[14]:
+
+
+def visualize_specific_scratching_window(
+    accel_data,
+    scratching_timestamps,
+    window_indices,
+    device_name,
+    padding_seconds=1,
+    figure_size=(12, 5),
+    line_colors=('red', 'green', 'blue'),
+    scratching_color='tab:cyan'
+):
+    """
+    Visualize specific scratching windows from an accelerometer dataset (e.g., GeneActiv or Actigraph).
+    This version places all title info on a single line per subplot and does not use a separate suptitle.
+    You can customize line colors and the color of the scratching region.
+    
+    Parameters:
+    -----------
+    accel_data : pandas.DataFrame
+        DataFrame containing accelerometer data with columns for 'timestamp', 'x', 'y', and 'z'
+    scratching_timestamps : list of tuples
+        List of (start_time, end_time) tuples representing scratching periods
+    window_indices : list of int
+        Indices of scratching windows to visualize (0-based)
+    device_name : str
+        A descriptive name for the device/hand (e.g., 'GeneActiv - NS024 (L)' or 'Actigraph LEAP - NS024 (R)')
+    padding_seconds : int, optional
+        Number of seconds to show before and after the scratching window (default: 1)
+    figure_size : tuple of float, optional
+        (width, height) in inches for the figure (default: (20, 4))
+    line_colors : tuple of str, optional
+        Colors for the X, Y, Z lines, in that order (default: ('red', 'green', 'blue'))
+    scratching_color : str, optional
+        Color to shade the scratching window (default: 'tab:cyan')
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        Figure object containing the visualization
+    """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+    from datetime import datetime, timedelta, time, date
+    import numpy as np
+    from scipy.signal import butter, filtfilt
+
+    # Helper function: High-pass filter
+    def highpass_filter(data, cutoff, fs, order=5):
+        nyq = 0.5 * fs
+        normal_cutoff = cutoff / nyq
+        b, a = butter(order, normal_cutoff, btype='high', analog=False)
+        filtered_data = filtfilt(b, a, data)
+        return filtered_data
+
+    # Make a copy to avoid modifying the original data
+    data_df = accel_data.copy()
+
+    # Preprocess timestamps if they are strings and use a colon before milliseconds
+    if not pd.api.types.is_datetime64_any_dtype(data_df['timestamp']):
+        data_df['timestamp'] = (
+            data_df['timestamp']
+            .astype(str)
+            .str.replace(r'(?<=\d{2}:\d{2}:\d{2}):', '.', regex=True)
+        )
+        data_df['timestamp'] = pd.to_datetime(data_df['timestamp'])
+
+    # Determine a base date from the first timestamp (in case some events are time-only)
+    base_date = None
+    if len(data_df) > 0:
+        first_ts = data_df['timestamp'].iloc[0]
+        if isinstance(first_ts, np.datetime64):
+            base_date = pd.Timestamp(first_ts).date()
+        else:
+            base_date = first_ts.date()
+    if base_date is None:
+        base_date = date.today()  # Fallback if no timestamps are available
+
+    # Create a figure with one subplot per selected window
+    n_windows = len(window_indices)
+    fig_width, fig_height = figure_size
+    total_fig_height = fig_height * n_windows
+    fig, axes = plt.subplots(
+        n_windows, 1, figsize=(fig_width, total_fig_height), sharex=False
+    )
+    if n_windows == 1:
+        axes = [axes]
+
+    # Process each selected window
+    for i, window_idx in enumerate(window_indices):
+        if window_idx < 0 or window_idx >= len(scratching_timestamps):
+            print(f"Warning: Window index {window_idx} is out of range. Skipping.")
+            continue
+
+        # Extract the start/end times for this window
+        start_time, end_time = scratching_timestamps[window_idx]
+
+        # Convert start_time to a datetime
+        if isinstance(start_time, time):
+            start_datetime = datetime.combine(base_date, start_time)
+        elif isinstance(start_time, pd.Timestamp):
+            start_datetime = start_time
+        elif isinstance(start_time, str):
+            start_datetime = pd.to_datetime(start_time)
+        else:
+            start_datetime = pd.to_datetime(start_time)
+
+        # Convert end_time to a datetime
+        if isinstance(end_time, time):
+            end_datetime = datetime.combine(base_date, end_time)
+        elif isinstance(end_time, pd.Timestamp):
+            end_datetime = end_time
+        elif isinstance(end_time, str):
+            end_datetime = pd.to_datetime(end_time)
+        else:
+            end_datetime = pd.to_datetime(end_time)
+
+        # Apply padding
+        padded_start = start_datetime - timedelta(seconds=padding_seconds)
+        padded_end = end_datetime + timedelta(seconds=padding_seconds)
+
+        # Filter data for this window (with padding)
+        window_data = data_df[
+            (data_df['timestamp'] >= padded_start) &
+            (data_df['timestamp'] <= padded_end)
+        ]
+
+        if len(window_data) == 0:
+            print(f"Warning: No data found for window {window_idx}. Skipping.")
+            continue
+
+        # Convert to numpy arrays for plotting
+        timestamps = window_data['timestamp'].to_numpy()
+        x_values = window_data['x'].to_numpy()
+        y_values = window_data['y'].to_numpy()
+        z_values = window_data['z'].to_numpy()
+
+        # Estimate the sampling frequency (fs) in Hz from the timestamps
+        if len(timestamps) > 1:
+            # Compute time differences in seconds
+            dt = np.median(np.diff(timestamps) / np.timedelta64(1, 's'))
+            fs = 1 / dt if dt > 0 else 1
+        else:
+            fs = 1  # Fallback if only one sample is present
+
+        # Apply a high-pass filter with a cutoff frequency of 0.5 Hz to each axis
+        x_filtered = highpass_filter(x_values, cutoff=0.5, fs=fs)
+        y_filtered = highpass_filter(y_values, cutoff=0.5, fs=fs)
+        z_filtered = highpass_filter(z_values, cutoff=0.5, fs=fs)
+
+        # Plot the filtered data
+        ax = axes[i]
+        ax.plot(timestamps, x_filtered, label='X-axis', alpha=0.8, color=line_colors[0])
+        ax.plot(timestamps, y_filtered, label='Y-axis', alpha=0.8, color=line_colors[1])
+        ax.plot(timestamps, z_filtered, label='Z-axis', alpha=0.8, color=line_colors[2])
+
+        # Overlay a semi-transparent region for the actual scratching period
+        ax.axvspan(start_datetime, end_datetime, alpha=0.15, color=scratching_color, label='Scratching')
+
+        # Vertical lines at the start/end of the scratching period
+        ax.axvline(x=start_datetime, color=scratching_color, linestyle='--', alpha=0.7)
+        ax.axvline(x=end_datetime, color=scratching_color, linestyle='--', alpha=0.7)
+
+        # Format time axis
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        ax.tick_params(axis='x', rotation=0)
+
+        # Single-line title for each subplot
+        #ax.set_title(
+        #    f"Accelerometer Data for {device_name} - "
+        #    f"Scratching Window {window_idx+1} ({start_datetime.strftime('%H:%M:%S')} - {end_datetime.strftime('%H:%M:%S')})",
+        #    fontsize=12
+        #)
+
+        # Y-Label and optionally an X-Label on the last subplot
+        ax.set_ylabel('Acceleration')
+        if i == n_windows - 1:
+            ax.set_xlabel('Time')
+
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+
+        # Annotate the padded regions
+        y_pos = ax.get_ylim()[1] * 0.9
+        ax.annotate(
+            'Pre-scratching',
+            (padded_start + timedelta(seconds=padding_seconds / 2), y_pos),
+            ha='center', color='red', alpha=0.9
+        )
+        ax.annotate(
+            'Post-scratching',
+            (end_datetime + timedelta(seconds=padding_seconds / 2), y_pos),
+            ha='center', color='red', alpha=0.9
+        )
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+
+    return fig
+
+
+# In[15]:
+
+
+# Visualising specific scratching window + some padding around window
+plt.close('all')  # Close all existing figures
+fig = visualize_specific_scratching_window(geneactiv_data_L, scratching_timestamps_geneactiv_L, [3], "GENEActiv - NS024 (L)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(actigraph_data_L, scratching_timestamps_actigraph_L, [3], "Actigraph LEAP - NS024 (L)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(panoramic_data_L, scratching_timestamps_panoramic_L, [3], "Panoramic - NS024 (L)", padding_seconds=1)
+plt.show()
+
+
+
+# In[16]:
+
+
+# Visualising specific scratching window + some padding around window
+plt.close('all')  # Close all existing figures
+fig = visualize_specific_scratching_window(geneactiv_data_R, scratching_timestamps_geneactiv_R, [0], "GENEActiv - NS024 (R)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(actigraph_data_R, scratching_timestamps_actigraph_R, [2], "Actigraph LEAP - NS024 (R)", padding_seconds=1)
+plt.show()
+
+fig = visualize_specific_scratching_window(panoramic_data_R, scratching_timestamps_panoramic_R, [0], "Panoramic - NS024 (R)", padding_seconds=1)
+plt.show()
+
+
+# In[17]:
+
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime, date, time, timedelta
+from scipy import signal
+
+def visualize_specific_scratching_window_magnitude(
+    accel_data, 
+    scratching_timestamps, 
+    window_indices, 
+    device_name, 
+    padding_seconds=1,
+    figure_size=(8, 5)
+):
+    """
+    Visualize specific scratching windows (with padding) from accelerometer data by plotting
+    the acceleration magnitude (sqrt(x^2+y^2+z^2)) instead of individual axes.
+    A high-pass filter is used to remove the gravity component first.
+    
+    Parameters:
+    -----------
+    accel_data : pandas.DataFrame
+        DataFrame containing accelerometer data with columns for timestamp, x, y, and z.
+    scratching_timestamps : list of tuples
+        List of (start_time, end_time) tuples representing scratching periods.
+    window_indices : list of int
+        Indices of scratching windows to visualize (0-based).
+    device_name : str
+        Device name (e.g., 'NS024 (L)', 'NS024 (R)').
+    padding_seconds : int, optional
+        Number of seconds to show before and after the scratching window (default: 1).
+    figure_size : tuple, optional
+        (width, height) of the figure in inches. The total height will be 
+        this height multiplied by the number of windows. Default is (24, 4).
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        Figure object containing the visualization.
+    """
+    
+    # Define a simple high-pass filter to remove gravity. 
+    # Adjust parameters (order, cutoff, fs) as appropriate for your data.
+    order = 2
+    cutoff = 0.5  # 0.5 Hz cutoff
+    fs = 50.0     # Sampling frequency in Hz
+    b, a = signal.butter(order, cutoff, btype='highpass', fs=fs)
+    
+    # Make a copy to avoid modifying the original data
+    data_df = accel_data.copy()
+    
+    # Preprocess timestamps: replace colon before milliseconds with a dot if necessary.
+    if not pd.api.types.is_datetime64_any_dtype(data_df['timestamp']):
+        data_df['timestamp'] = (
+            data_df['timestamp']
+            .astype(str)
+            .str.replace(r'(?<=\d{2}:\d{2}:\d{2}):', '.', regex=True)
+        )
+        data_df['timestamp'] = pd.to_datetime(data_df['timestamp'])
+    
+    # Determine a base date from the first timestamp to use for time-only values.
+    if len(data_df) > 0:
+        first_ts = data_df['timestamp'].iloc[0]
+        if isinstance(first_ts, np.datetime64):
+            base_date = pd.Timestamp(first_ts).date()
+        else:
+            base_date = first_ts.date()
+    else:
+        base_date = date.today()  # Fallback to today if no date is available
+    
+    # Create a figure with one subplot per selected window using figure_size.
+    n_windows = len(window_indices)
+    fig_width, fig_height = figure_size
+    total_fig_height = fig_height * n_windows
+    fig, axes = plt.subplots(n_windows, 1, figsize=(fig_width, total_fig_height), sharex=False)
+    if n_windows == 1:
+        axes = [axes]
+    
+    # Process each selected window.
+    for i, window_idx in enumerate(window_indices):
+        if window_idx < 0 or window_idx >= len(scratching_timestamps):
+            print(f"Warning: Window index {window_idx} is out of range. Skipping.")
+            continue
+        
+        # Get the start and end times for this window.
+        start_time, end_time = scratching_timestamps[window_idx]
+        
+        # Convert start time.
+        if isinstance(start_time, time):
+            start_datetime = datetime.combine(base_date, start_time)
+        else:
+            start_datetime = pd.to_datetime(start_time)
+        
+        # Convert end time.
+        if isinstance(end_time, time):
+            end_datetime = datetime.combine(base_date, end_time)
+        else:
+            end_datetime = pd.to_datetime(end_time)
+        
+        # Add padding before and after.
+        padded_start = start_datetime - timedelta(seconds=padding_seconds)
+        padded_end = end_datetime + timedelta(seconds=padding_seconds)
+        
+        # Filter data for this window with padding.
+        window_data = data_df[(data_df['timestamp'] >= padded_start) & 
+                              (data_df['timestamp'] <= padded_end)]
+        
+        if len(window_data) == 0:
+            print(f"Warning: No data found for window {window_idx}. Skipping.")
+            continue
+        
+        # Apply high-pass filter to remove gravity on each axis
+        window_data = window_data.copy()
+        window_data['x'] = signal.filtfilt(b, a, window_data['x'])
+        window_data['y'] = signal.filtfilt(b, a, window_data['y'])
+        window_data['z'] = signal.filtfilt(b, a, window_data['z'])
+        
+        # Compute acceleration magnitude AFTER filtering.
+        window_data['magnitude'] = np.sqrt(
+            window_data['x']**2 + 
+            window_data['y']**2 + 
+            window_data['z']**2
+        )
+        
+        # Convert data to numpy arrays.
+        timestamps = window_data['timestamp'].to_numpy()
+        magnitude = window_data['magnitude'].to_numpy()
+        
+        # Plot the magnitude for this window.
+        ax = axes[i]
+        ax.plot(timestamps, magnitude, label='Magnitude', color='purple', alpha=0.8)
+        
+        # Overlay the actual scratching period.
+        ax.axvspan(start_datetime, end_datetime, alpha=0.15, color='tab:cyan', label='Scratching')
+        ax.axvline(x=start_datetime, color='tab:cyan', linestyle='--', alpha=0.7)
+        ax.axvline(x=end_datetime, color='tab:cyan', linestyle='--', alpha=0.7)
+        
+        # Format the x-axis.
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+        ax.tick_params(axis='x', rotation=0)  # keep labels horizontal
+        
+        # Single-line subplot title
+        ax.set_title(
+            f'{device_name} - Acceleration Magnitude for '
+            f'Scratching Window {window_idx+1} ({start_datetime.strftime("%H:%M:%S")} - {end_datetime.strftime("%H:%M:%S")})',
+            fontsize=12
+        )
+        
+        # Labels
+        ax.set_ylabel('Acceleration Magnitude')
+        if i == n_windows - 1:
+            ax.set_xlabel('Time')
+        
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+        
+        # Add annotations for the padded regions.
+        y_pos = ax.get_ylim()[1] * 0.9
+        ax.annotate(
+            'Pre-scratching', 
+            (padded_start + timedelta(seconds=padding_seconds/2), y_pos),
+            ha='center', color='gray', alpha=0.7
+        )
+        ax.annotate(
+            'Post-scratching', 
+            (end_datetime + timedelta(seconds=padding_seconds/2), y_pos),
+            ha='center', color='gray', alpha=0.7
+        )
+    
+    
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+    
+    return fig
+
+
+# In[18]:
+
+
+# Visualize a specific scratching window (window index 3 with 10 seconds padding) for GENEActiv left-hand data.
+plt.close('all')  # Close any existing figures
+fig_geneactiv_window = visualize_specific_scratching_window_magnitude(
+    geneactiv_data_L, scratching_timestamps_actigraph_L, [1], "GENEActiv - NS024 (L)", padding_seconds=1)
+plt.show()
+
+# Visualize a specific scratching window for Actigraph left-hand data.
+fig_actigraph_window = visualize_specific_scratching_window_magnitude(
+    actigraph_data_L, scratching_timestamps_actigraph_L, [1], "Actigraph LEAP - NS024 (L)", padding_seconds=1)
+plt.show()
+
+# Visualize a specific scratching window for Actigraph left-hand data.
+fig_panoramic_window = visualize_specific_scratching_window_magnitude(
+    panoramic_data_L, scratching_timestamps_panoramic_L, [1], "Panoramic - NS024 (L)", padding_seconds=1)
+plt.show()
+
+
+# In[19]:
+
+
+# Visualize a specific scratching window (window index 3 with 10 seconds padding) for GENEActiv left-hand data.
+plt.close('all')  # Close any existing figures
+fig_geneactiv_window = visualize_specific_scratching_window_magnitude(
+    geneactiv_data_R, scratching_timestamps_actigraph_R, [0], "GENEActiv - NS024 (R)")
+plt.show()
+
+# Visualize a specific scratching window for Actigraph left-hand data.
+fig_actigraph_window = visualize_specific_scratching_window_magnitude(
+    actigraph_data_R, scratching_timestamps_actigraph_R, [2], "Actigraph LEAP - Participant  (R)")
+plt.show()
+
+# Visualize a specific scratching window for Actigraph left-hand data.
+fig_panoramic_window = visualize_specific_scratching_window_magnitude(
+    panoramic_data_R, scratching_timestamps_panoramic_R, [0], "Panoramic - NS024 (R)")
+plt.show()
+
+
+# In[20]:
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime, date, time, timedelta
+
+def fix_timestamp(ts):
+    """
+    Helper function to fix timestamp strings (e.g., "2025-02-27 17:02:00:000" -> "2025-02-27 17:02:00.000").
+    """
+    if isinstance(ts, str) and ts.count(':') == 3:
+        parts = ts.rsplit(":", 1)
+        return parts[0] + "." + parts[1]
+    return ts
+
+def visualize_specific_scratching_window_fft(
+    accel_data,
+    scratching_timestamps,
+    window_indices,
+    device_name,
+    figure_size=(5, 4)
+):
+    """
+    Visualize the FFT of the acceleration magnitude signal for specific scratching windows 
+    from accelerometer data. There is NO padding around the windows, and the two highest 
+    peaks in each FFT are annotated with their frequency values.
+
+    Parameters:
+    -----------
+    accel_data : pandas.DataFrame
+        DataFrame containing accelerometer data with columns for 'timestamp', 'x', 'y', and 'z'.
+    scratching_timestamps : list of tuples
+        List of (start_time, end_time) tuples representing scratching periods.
+    window_indices : list of int
+        Indices of scratching windows to visualize (0-based).
+    device_name : str
+        Device name (e.g., 'GENEActiv - NS024 (L)', 'Actigraph LEAP - NS024 (R)').
+    figure_size : tuple of float, optional
+        A (width, height) tuple in inches for the figure size (default: (15, 5)).
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        Figure object containing the FFT visualizations.
+    """
+    
+    # Make a copy to avoid modifying original data.
+    data_df = accel_data.copy()
+    
+    # Preprocess timestamps if needed.
+    if not pd.api.types.is_datetime64_any_dtype(data_df['timestamp']):
+        # Replace the last colon before milliseconds with a dot if needed.
+        data_df['timestamp'] = data_df['timestamp'].astype(str).str.replace(
+            r'(?<=\d{2}:\d{2}:\d{2}):', '.', regex=True
+        )
+        data_df['timestamp'] = pd.to_datetime(data_df['timestamp'])
+    
+    # Determine a base date from the first timestamp to use for time-only values.
+    base_date = None
+    if len(data_df) > 0:
+        base_date = pd.Timestamp(data_df['timestamp'].iloc[0]).date()
+    if base_date is None:
+        base_date = date.today()  # Fallback if no date available
+    
+    # Prepare the figure and axes.
+    n_windows = len(window_indices)
+    fig, axes = plt.subplots(n_windows, 1, figsize=figure_size, sharex=False)
+    if n_windows == 1:
+        axes = [axes]
+    
+    for i, window_idx in enumerate(window_indices):
+        if window_idx < 0 or window_idx >= len(scratching_timestamps):
+            print(f"Warning: Window index {window_idx} is out of range. Skipping.")
+            continue
+        
+        # Get the start/end times for the selected window.
+        start_time, end_time = scratching_timestamps[window_idx]
+        
+        # Convert start time.
+        if isinstance(start_time, time):
+            start_datetime = datetime.combine(base_date, start_time)
+        elif isinstance(start_time, pd.Timestamp):
+            start_datetime = start_time
+        elif isinstance(start_time, str):
+            start_datetime = pd.to_datetime(fix_timestamp(start_time))
+        else:
+            start_datetime = pd.to_datetime(start_time)
+        
+        # Convert end time.
+        if isinstance(end_time, time):
+            end_datetime = datetime.combine(base_date, end_time)
+        elif isinstance(end_time, pd.Timestamp):
+            end_datetime = end_time
+        elif isinstance(end_time, str):
+            end_datetime = pd.to_datetime(fix_timestamp(end_time))
+        else:
+            end_datetime = pd.to_datetime(end_time)
+        
+        # NOTE: Padding is now fixed to 0 seconds.
+        padded_start = start_datetime
+        padded_end = end_datetime
+        
+        # Filter data for this window (no padding).
+        window_data = data_df[
+            (data_df['timestamp'] >= padded_start) &
+            (data_df['timestamp'] <= padded_end)
+        ]
+        
+        if window_data.empty:
+            print(f"Warning: No data found for window {window_idx}. Skipping.")
+            continue
+        
+        # Compute acceleration magnitude.
+        window_data = window_data.copy()
+        window_data['magnitude'] = np.sqrt(
+            window_data['x']**2 + window_data['y']**2 + window_data['z']**2
+        )
+        
+        # Sort by timestamp.
+        window_data.sort_values('timestamp', inplace=True)
+        
+        # Convert timestamps to seconds relative to the first timestamp in this window.
+        times = window_data['timestamp'].to_numpy()
+        t0 = times[0]
+        times_sec = np.array([(t - t0) / np.timedelta64(1, 's') for t in times])
+        
+        # Check we have at least two data points for a meaningful FFT.
+        if len(times_sec) < 2:
+            print(f"Warning: Not enough data points for FFT in window {window_idx}. Skipping.")
+            continue
+        
+        dt = np.mean(np.diff(times_sec))  # Approx sampling period.
+        
+        # Compute FFT on the magnitude signal.
+        magnitude_signal = window_data['magnitude'].to_numpy()
+        fft_values = np.fft.fft(magnitude_signal)
+        freqs = np.fft.fftfreq(len(fft_values), d=dt)
+        
+        # Only keep positive frequencies.
+        pos_mask = freqs >= 0
+        freqs = freqs[pos_mask]
+        fft_amplitude = np.abs(fft_values)[pos_mask]
+        
+        # Remove the DC component (0 Hz) if desired.
+        nonzero_mask = freqs > 0
+        freqs = freqs[nonzero_mask]
+        fft_amplitude = fft_amplitude[nonzero_mask]
+        
+        # Plot the FFT result.
+        ax = axes[i]
+        ax.plot(freqs, fft_amplitude, label='FFT Amplitude', color='tab:blue', alpha=0.8)
+        
+        # Annotate the two highest peaks with their frequency.
+        if len(freqs) >= 1:
+            # Find indices of the top two peak amplitudes.
+            top2_indices = np.argsort(fft_amplitude)[-1:]
+            for idx_peak in top2_indices:
+                freq_val = freqs[idx_peak]
+                amp_val = fft_amplitude[idx_peak]
+                
+                # Place annotation slightly above the peak
+                ax.annotate(
+                    f"{freq_val:.2f} Hz",
+                    xy=(freq_val, amp_val),
+                    xytext=(0, 10),  # move label 10pts above
+                    textcoords="offset points",
+                    ha="center",
+                    color="red",
+                    fontsize=12
+                )
+        
+        # Set titles and labels.
+        #ax.set_title(
+        #    f'{device_name} - FFT of Acceleration Magnitude - '
+        #    f'Window {window_idx+1} ({start_datetime.strftime("%H:%M:%S")} - {end_datetime.strftime("%H:%M:%S")})',
+        #    fontsize=11
+        #)
+        ax.set_xlabel("Frequency (Hz)", fontsize=9)
+        ax.set_ylabel("Amplitude", fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right', fontsize=9)
+    
+    # Layout adjustments.
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.9)
+    plt.xlim(0,15)
+    
+    return fig
+
+
+# In[21]:
+
+
+# FFT Visualisation
+plt.close('all')  # Close any existing figures
+
+# Visualize FFT for a specific window (window index 3 with 10 seconds padding) for GENEActiv left-hand data.
+fig_geneactiv_fft_L = visualize_specific_scratching_window_fft(
+    geneactiv_data_L, scratching_timestamps_actigraph_L, [0], "GENEActiv - NS024 (L)")
+plt.show()
+
+# Visualize FFT for Actigraph left-hand data.
+fig_actigraph_fft_L = visualize_specific_scratching_window_fft(
+    actigraph_data_L, scratching_timestamps_actigraph_L, [0], "Actigraph LEAP - NS024 (L)")
+plt.show()
+
+# Visualize FFT for Actigraph left-hand data.
+fig_panoramic_fft_L = visualize_specific_scratching_window_fft(
+    panoramic_data_L, scratching_timestamps_panoramic_L, [0], "Panoramic - NS024 (L)")
+plt.show()
+
+
+# In[22]:
+
+
+# Visualize FFT for GENEActiv right-hand data.
+fig_geneactiv_fft_R = visualize_specific_scratching_window_fft(
+    geneactiv_data_R, scratching_timestamps_actigraph_R, [0], "GENEActiv - NS024 (R)")
+plt.show()
+
+# Visualize FFT for Actigraph right-hand data.
+fig_actigraph_fft_R = visualize_specific_scratching_window_fft(
+    actigraph_data_R, scratching_timestamps_actigraph_R, [2], "Actigraph LEAP - Participant A (R)")
+plt.show()
+
+# Visualize FFT for Actigraph right-hand data.
+fig_actigraph_fft_R = visualize_specific_scratching_window_fft(
+    panoramic_data_R, scratching_timestamps_panoramic_R, [0], "Panoramic - NS024 (R)")
+plt.show()
+
+
+# In[23]:
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime, date, time, timedelta
+
+def fix_timestamp(ts):
+    """
+    Helper function to fix timestamp strings (e.g., "2025-02-27 17:02:00:000" -> "2025-02-27 17:02:00.000").
+    """
+    if isinstance(ts, str) and ts.count(':') == 3:
+        parts = ts.rsplit(":", 1)
+        return parts[0] + "." + parts[1]
+    return ts
+
+def analyze_all_scratching_windows_fft(
+    accel_data,
+    scratching_timestamps,
+    device_name,
+    output_csv_filename="fft_peaks.csv",
+    figure_size=(15, 5)
+):
+    """
+    Cycles through all scratching windows, plotting each window's FFT (no padding), 
+    identifying the two largest amplitude peaks, and writing those peak frequencies 
+    and amplitudes to a CSV file.
+
+    Parameters:
+    -----------
+    accel_data : pandas.DataFrame
+        DataFrame containing accelerometer data with columns for 'timestamp', 'x', 'y', and 'z'.
+    scratching_timestamps : list of tuples
+        List of (start_time, end_time) tuples representing scratching periods.
+    device_name : str
+        Device name (e.g., 'GENEActiv - NS003 (L)', 'Actigraph LEAP - NS003 (R)').
+    output_csv_filename : str, optional
+        Name/path of the CSV file to which the two largest peak frequencies & amplitudes
+        will be written (default: "fft_peaks.csv").
+    figure_size : tuple of float, optional
+        A (width, height) tuple in inches for the figure size (default: (15, 5)).
+    
+    Returns:
+    --------
+    matplotlib.figure.Figure
+        Figure object containing the FFT plots for each scratching window.
+    """
+
+    # Make a copy to avoid modifying original data.
+    data_df = accel_data.copy()
+    
+    # Preprocess timestamps if needed.
+    if not pd.api.types.is_datetime64_any_dtype(data_df['timestamp']):
+        # Replace the last colon before milliseconds with a dot if needed.
+        data_df['timestamp'] = data_df['timestamp'].astype(str).str.replace(
+            r'(?<=\d{2}:\d{2}:\d{2}):', '.', regex=True
+        )
+        data_df['timestamp'] = pd.to_datetime(data_df['timestamp'])
+    
+    # Determine a base date from the first timestamp to use for time-only values.
+    base_date = None
+    if len(data_df) > 0:
+        base_date = pd.Timestamp(data_df['timestamp'].iloc[0]).date()
+    if base_date is None:
+        base_date = date.today()  # Fallback if no date is available
+
+    # Prepare results storage for CSV writing.
+    peak_results = []
+
+    n_windows = len(scratching_timestamps)
+    fig, axes = plt.subplots(n_windows, 1, figsize=(figure_size[0], figure_size[1] * n_windows), sharex=False)
+    if n_windows == 1:
+        axes = [axes]
+
+    for i, (start_time, end_time) in enumerate(scratching_timestamps):
+        
+        # Convert start/end time to full datetimes if needed.
+        if isinstance(start_time, time):
+            start_datetime = datetime.combine(base_date, start_time)
+        elif isinstance(start_time, pd.Timestamp):
+            start_datetime = start_time
+        elif isinstance(start_time, str):
+            start_datetime = pd.to_datetime(fix_timestamp(start_time))
+        else:
+            start_datetime = pd.to_datetime(start_time)
+        
+        if isinstance(end_time, time):
+            end_datetime = datetime.combine(base_date, end_time)
+        elif isinstance(end_time, pd.Timestamp):
+            end_datetime = end_time
+        elif isinstance(end_time, str):
+            end_datetime = pd.to_datetime(fix_timestamp(end_time))
+        else:
+            end_datetime = pd.to_datetime(end_time)
+        
+        # Filter data for this window (no padding).
+        window_data = data_df[
+            (data_df['timestamp'] >= start_datetime) &
+            (data_df['timestamp'] <= end_datetime)
+        ]
+        
+        if window_data.empty:
+            print(f"Warning: No data found for window {i} ({start_datetime} - {end_datetime}). Skipping.")
+            continue
+        
+        # Compute acceleration magnitude.
+        window_data = window_data.copy()
+        window_data['magnitude'] = np.sqrt(
+            window_data['x']**2 + window_data['y']**2 + window_data['z']**2
+        )
+        
+        # Sort by timestamp.
+        window_data.sort_values('timestamp', inplace=True)
+        
+        # Convert timestamps to seconds relative to the first timestamp in this window.
+        times = window_data['timestamp'].to_numpy()
+        t0 = times[0]
+        times_sec = np.array([(t - t0) / np.timedelta64(1, 's') for t in times])
+        
+        if len(times_sec) < 2:
+            print(f"Warning: Not enough data points for FFT in window {i}. Skipping.")
+            continue
+        
+        # Approx sampling period.
+        dt = np.mean(np.diff(times_sec))
+        
+        # Compute FFT on the magnitude signal.
+        magnitude_signal = window_data['magnitude'].to_numpy()
+        fft_values = np.fft.fft(magnitude_signal)
+        freqs = np.fft.fftfreq(len(fft_values), d=dt)
+        
+        # Only keep positive frequencies.
+        pos_mask = freqs >= 0
+        freqs = freqs[pos_mask]
+        fft_amplitude = np.abs(fft_values)[pos_mask]
+        
+        # Remove the DC component (0 Hz).
+        nonzero_mask = freqs > 0
+        freqs = freqs[nonzero_mask]
+        fft_amplitude = fft_amplitude[nonzero_mask]
+        
+        # Identify top 2 peaks by amplitude.
+        top_2_idx = np.argsort(fft_amplitude)[-2:]  # indices of the two largest
+        # Sort them so the highest is annotated last
+        top_2_idx = top_2_idx[np.argsort(fft_amplitude[top_2_idx])]
+        
+        peak_freqs = freqs[top_2_idx]
+        peak_amps = fft_amplitude[top_2_idx]
+
+        # Store these results for CSV output.
+        # For clarity, let's store each peak on its own line in the CSV, 
+        # or store them in the same line. 
+        # Example below stores them in one line with columns for freq1, amp1, freq2, amp2.
+        row = {
+            'device_name': device_name,
+            'window_index': i,
+            'start_time': str(start_datetime),
+            'end_time': str(end_datetime),
+            'freq1': float(peak_freqs[0]),
+            'amp1': float(peak_amps[0]),
+            'freq2': float(peak_freqs[1]),
+            'amp2': float(peak_amps[1])
+        }
+        peak_results.append(row)
+        
+        # Plot the FFT result for this window.
+        ax = axes[i]
+        ax.plot(freqs, fft_amplitude, label='FFT Amplitude', color='tab:blue', alpha=0.8)
+        
+        # Annotate the two peaks on the plot.
+        for (f_val, amp_val) in zip(peak_freqs, peak_amps):
+            ax.annotate(
+                f"{f_val:.2f} Hz",
+                xy=(f_val, amp_val),
+                xytext=(0, 10),
+                textcoords="offset points",
+                ha="center",
+                color="red",
+                fontsize=9
+            )
+        
+        # Set titles and labels.
+        ax.set_title(
+            f'{device_name} - FFT (Window {i+1})\n'
+            f'({start_datetime.strftime("%H:%M:%S")} - {end_datetime.strftime("%H:%M:%S")})',
+            fontsize=12
+        )
+        ax.set_xlabel("Frequency (Hz)", fontsize=9)
+        ax.set_ylabel("Amplitude", fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right', fontsize=9)
+    
+    # Write the results to a CSV file.
+    if peak_results:
+        df_peaks = pd.DataFrame(peak_results)
+        df_peaks.to_csv(output_csv_filename, index=False)
+        print(f"Peak frequency results saved to {output_csv_filename}.")
+    else:
+        print("No FFT peak results to write (no windows found or insufficient data).")
+    
+    # Layout adjustments.
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.88)
+    
+    return fig
+
+
+# In[24]:
+
+
+plt.close('all')
+
+# GENEActiv
+fig_geneactiv = analyze_all_scratching_windows_fft(
+    geneactiv_data_L,
+    scratching_timestamps_geneactiv_L,
+    device_name="GENEActiv - NS003 (L)",
+    output_csv_filename="geneactiv_fft_peaks_L.csv"
+)
+plt.show()
+
+# Actigraph
+fig_actigraph = analyze_all_scratching_windows_fft(
+    actigraph_data_L,
+    scratching_timestamps_actigraph_L,
+    device_name="Actigraph LEAP - NS003 (L)",
+    output_csv_filename="actigraph_fft_peaks_L.csv"
+)
+plt.show()
+
+# Panoramic
+fig_panoramic = analyze_all_scratching_windows_fft(
+    panoramic_data_L,
+    scratching_timestamps_panoramic_L,
+    device_name="Panoramic - NS003 (L)",
+    output_csv_filename="panoramic_fft_peaks_L.csv"
+)
+plt.show()
+
+
+# In[25]:
+
+
+plt.close('all')
+
+# GENEActiv
+fig_geneactiv = analyze_all_scratching_windows_fft(
+    geneactiv_data_R,
+    scratching_timestamps_geneactiv_R,
+    device_name="GENEActiv - NS003 (R)",
+    output_csv_filename="geneactiv_fft_peaks_R.csv"
+)
+plt.show()
+
+# Actigraph
+fig_actigraph = analyze_all_scratching_windows_fft(
+    actigraph_data_R,
+    scratching_timestamps_actigraph_R,
+    device_name="Actigraph LEAP - NS003 (R)",
+    output_csv_filename="actigraph_fft_peaks_R.csv"
+)
+plt.show()
+
+# Panoramic
+fig_panoramic = analyze_all_scratching_windows_fft(
+    panoramic_data_R,
+    scratching_timestamps_panoramic_R,
+    device_name="Panoramic - NS003 (R)",
+    output_csv_filename="panoramic_fft_peaks_R.csv"
+)
+plt.show()
+
+
+# In[26]:
+
+
+import pandas as pd
+
+def combine_fft_peak_csvs_three_rows_per_window(
+    actigraph_L_csv,
+    geneactiv_L_csv,
+    panoramic_L_csv,
+    output_L_csv="AllDeviceFFTPeaks_Stacked_L.csv"
+):
+    """
+    Loads the peak-frequency CSVs for each device, then stacks them so that for each
+    window_index, there are three rows in the order: Actigraph, GeneActiv, Panoramic.
+    Writes the result to a CSV file.
+
+    Parameters
+    ----------
+    actigraph_csv_L : str
+        Path to the CSV with Actigraph peak frequencies/amplitudes.
+    geneactiv_csv_L : str
+        Path to the CSV with GeneActiv peak frequencies/amplitudes.
+    panoramic_csv_L : str
+        Path to the CSV with Panoramic peak frequencies/amplitudes.
+    output_csv_L : str, optional
+        Output path for the merged CSV (default: 'AllDeviceFFTPeaks_Stacked_L.csv').
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing the stacked results, sorted by window_index.
+    """
+    
+    # Read each CSV into a DataFrame
+    df_a = pd.read_csv(actigraph_L_csv)
+    df_g = pd.read_csv(geneactiv_L_csv)
+    df_p = pd.read_csv(panoramic_L_csv)
+    
+    # For each device, rename freq/amp columns to a common set,
+    # then add a 'device' column identifying the device.
+    
+    # Actigraph
+    df_a = df_a.rename(
+        columns={
+            "freq1": "freq1",
+            "amp1": "amp1",
+            "freq2": "freq2",
+            "amp2": "amp2",
+        }
+    )
+    df_a["device"] = "Actigraph"
+    
+    # GeneActiv
+    df_g = df_g.rename(
+        columns={
+            "freq1": "freq1",
+            "amp1": "amp1",
+            "freq2": "freq2",
+            "amp2": "amp2"
+        }
+    )
+    df_g["device"] = "GeneActiv"
+    
+    # Panoramic
+    df_p = df_p.rename(
+        columns={
+            "freq1": "freq1",
+            "amp1": "amp1",
+            "freq2": "freq2",
+            "amp2": "amp2",
+        }
+    )
+    df_p["device"] = "Panoramic"
+
+    # Concatenate in the order: Actigraph, GeneActiv, Panoramic.
+    # Each row is stacked vertically; that is, for each window_index, 
+    # we have one row per device.
+    df_stacked = pd.concat([df_a, df_g, df_p], axis=0, ignore_index=True)
+    
+    # Sort by window_index so that rows for each window are grouped together.
+    df_stacked.sort_values(by="window_index", inplace=True)
+
+    # OPTIONAL: Reorder or filter columns to your preference.
+    # For example:
+    # desired_cols = [
+    #     "window_index", "device", "start_time", "end_time",
+    #     "freq1", "amp1", "freq2", "amp2"
+    # ]
+    # existing_cols = [c for c in desired_cols if c in df_stacked.columns]
+    # df_stacked = df_stacked[existing_cols]
+
+    # Write the stacked result to a CSV
+    df_stacked.to_csv(output_L_csv, index=False)
+    print(f"Created stacked CSV in '{output_L_csv}', device order: Actigraph → GeneActiv → Panoramic.")
+
+    return df_stacked
+
+# Example usage:
+df_stacked = combine_fft_peak_csvs_three_rows_per_window(
+    actigraph_L_csv="actigraph_fft_peaks_L.csv",
+    geneactiv_L_csv="geneactiv_fft_peaks_L.csv",
+    panoramic_L_csv="panoramic_fft_peaks_L.csv",
+    output_L_csv="AllDeviceFFTPeaks_Stacked_L.csv"
+)
+
+
+# In[27]:
+
+
+import pandas as pd
+
+def combine_fft_peak_csvs_three_rows_per_window(
+    actigraph_R_csv,
+    geneactiv_R_csv,
+    panoramic_R_csv,
+    output_R_csv="AllDeviceFFTPeaks_Stacked_R.csv"
+):
+    """
+    Loads the peak-frequency CSVs for each device, then stacks them so that for each
+    window_index, there are three rows in the order: Actigraph, GeneActiv, Panoramic.
+    Writes the result to a CSV file.
+
+    Parameters
+    ----------
+    actigraph_csv_R : str
+        Path to the CSV with Actigraph peak frequencies/amplitudes.
+    geneactiv_csv_R : str
+        Path to the CSV with GeneActiv peak frequencies/amplitudes.
+    panoramic_csv_R : str
+        Path to the CSV with Panoramic peak frequencies/amplitudes.
+    output_csv_R : str, optional
+        Output path for the merged CSV (default: 'AllDeviceFFTPeaks_Stacked_L.csv').
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing the stacked results, sorted by window_index.
+    """
+    
+    # Read each CSV into a DataFrame
+    df_a = pd.read_csv(actigraph_R_csv)
+    df_g = pd.read_csv(geneactiv_R_csv)
+    df_p = pd.read_csv(panoramic_R_csv)
+    
+    # For each device, rename freq/amp columns to a common set,
+    # then add a 'device' column identifying the device.
+    
+    # Actigraph
+    df_a = df_a.rename(
+        columns={
+            "freq1": "freq1",
+            "amp1": "amp1",
+            "freq2": "freq2",
+            "amp2": "amp2",
+        }
+    )
+    df_a["device"] = "Actigraph"
+    
+    # GeneActiv
+    df_g = df_g.rename(
+        columns={
+            "freq1": "freq1",
+            "amp1": "amp1",
+            "freq2": "freq2",
+            "amp2": "amp2"
+        }
+    )
+    df_g["device"] = "GeneActiv"
+    
+    # Panoramic
+    df_p = df_p.rename(
+        columns={
+            "freq1": "freq1",
+            "amp1": "amp1",
+            "freq2": "freq2",
+            "amp2": "amp2",
+        }
+    )
+    df_p["device"] = "Panoramic"
+
+    # Concatenate in the order: Actigraph, GeneActiv, Panoramic.
+    # Each row is stacked vertically; that is, for each window_index, 
+    # we have one row per device.
+    df_stacked = pd.concat([df_a, df_g, df_p], axis=0, ignore_index=True)
+    
+    # Sort by window_index so that rows for each window are grouped together.
+    df_stacked.sort_values(by="window_index", inplace=True)
+
+    # OPTIONAL: Reorder or filter columns to your preference.
+    # For example:
+    # desired_cols = [
+    #     "window_index", "device", "start_time", "end_time",
+    #     "freq1", "amp1", "freq2", "amp2"
+    # ]
+    # existing_cols = [c for c in desired_cols if c in df_stacked.columns]
+    # df_stacked = df_stacked[existing_cols]
+
+    # Write the stacked result to a CSV
+    df_stacked.to_csv(output_R_csv, index=False)
+    print(f"Created stacked CSV in '{output_R_csv}', device order: Actigraph → GeneActiv → Panoramic.")
+
+    return df_stacked
+
+# Example usage:
+df_stacked = combine_fft_peak_csvs_three_rows_per_window(
+    actigraph_R_csv="actigraph_fft_peaks_R.csv",
+    geneactiv_R_csv="geneactiv_fft_peaks_R.csv",
+    panoramic_R_csv="panoramic_fft_peaks_R.csv",
+    output_R_csv="AllDeviceFFTPeaks_Stacked_R.csv"
+)
+
