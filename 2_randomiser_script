@@ -1,0 +1,102 @@
+## Script randomiser programme
+
+import random
+
+def generate_scratching_activity():
+    ## Generates a random scratching activity with the required components.
+    focus_area = random.choice([
+        "Head", "Feet", "Elbows", "Knees", "Wrists", "Neck", "Face", "Scalp"
+    ])
+    duration = random.randint(10, 20)  # in seconds
+    rom = random.choice(["Low", "Medium", "High"])
+    speed = random.choice(["Slow", "Fast"])
+    return {
+        "type": "Scratching",
+        "focus_area": focus_area,
+        "duration": duration / 60,  # convert to minutes
+        "rom": rom,
+        "speed": speed,
+    }
+
+def generate_confounding_activity():
+    ## Generates a random confounding activity.
+    activity = random.choice([
+        "Walking",
+        "Enter in and out of bed",
+        "Tossing and turning",
+        "Scrolling on phone",
+        "Typing text messages",
+    ])
+    duration = random.randint(5, 10)  # in minutes
+    return {
+        "type": "Confounding",
+        "activity": activity,
+        "duration": duration,
+    }
+
+def create_task():
+    ## Creates a single task that is either a standalone scratching activity or a confounding activity with embedded scratching.
+    if random.choice([True, False]):
+        # Standalone scratching activity
+        task = generate_scratching_activity()
+    else:
+        # Scratching activity embedded in a confounding activity
+        confounding = generate_confounding_activity()
+        scratching = generate_scratching_activity()
+        scratching_duration = scratching["duration"]
+        # Ensure confounding activity duration is longer than scratching activity
+        while confounding["duration"] <= scratching_duration:
+            confounding = generate_confounding_activity()
+        task = {
+            "type": "Combined",
+            "confounding": confounding,
+            "scratching": scratching,
+        }
+    return task
+
+def randomize_tasks(target_duration=30):
+    ## Generates and randomizes tasks to fit the target duration.
+    tasks = []
+    total_duration = 0
+
+    while total_duration < target_duration:
+        task = create_task()
+        # Calculate task duration
+        if task["type"] == "Scratching":
+            task_duration = task["duration"]
+        else:  # Combined task
+            task_duration = task["confounding"]["duration"]
+
+        # Ensure total duration doesn't exceed the target
+        if total_duration + task_duration > target_duration:
+            break
+
+        tasks.append(task)
+        total_duration += task_duration
+
+    # Shuffle tasks for random order
+    random.shuffle(tasks)
+    return tasks, total_duration
+
+def main():
+    tasks, total_duration = randomize_tasks()
+    print(f"Generated tasks for total duration of {total_duration:.2f} minutes:")
+    for i, task in enumerate(tasks, 1):
+        print(f"\nTask {i}:")
+        if task["type"] == "Scratching":
+            print("  Type: Standalone Scratching")
+            print(f"  Focus Area: {task['focus_area']}")
+            print(f"  Duration: {task['duration'] * 60:.0f} seconds")
+            print(f"  ROM: {task['rom']}")
+            print(f"  Speed: {task['speed']}")
+        else:
+            print("  Type: Combined Task")
+            print(f"  Confounding Activity: {task['confounding']['activity']}")
+            print(f"  Confounding Duration: {task['confounding']['duration']:.2f} minutes")
+            print(f"  Scratching Focus Area: {task['scratching']['focus_area']}")
+            print(f"  Scratching Duration: {task['scratching']['duration'] * 60:.0f} seconds")
+            print(f"  Scratching ROM: {task['scratching']['rom']}")
+            print(f"  Scratching Speed: {task['scratching']['speed']}")
+
+if __name__ == "__main__":
+    main()
