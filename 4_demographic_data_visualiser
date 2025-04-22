@@ -1,0 +1,113 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[2]:
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Create a list of dictionaries for each participant (correcting 158 -> 1.58 for NS012):
+data = [
+    {"ID": "NS001", "Age": 20, "Gender": "F", "Height": 1.74, "Weight": 64, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS002", "Age": 58, "Gender": "M", "Height": 1.78, "Weight": 69, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS003", "Age": 20, "Gender": "F", "Height": 1.70, "Weight": 62, "Handedness": "R", "ScratchFreq": "Less than once per week"},
+    {"ID": "NS004", "Age": 21, "Gender": "F", "Height": 1.58, "Weight": 50, "Handedness": "R", "ScratchFreq": "Less than once per week"},
+    {"ID": "NS005", "Age": 23, "Gender": "M", "Height": 1.93, "Weight": 75, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS006", "Age": 21, "Gender": "F", "Height": 1.62, "Weight": 62, "Handedness": "R", "ScratchFreq": "1-3 Times per week"},
+    {"ID": "NS007", "Age": 22, "Gender": "F", "Height": 1.65, "Weight": 70, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS008", "Age": 21, "Gender": "F", "Height": 1.80, "Weight": 70, "Handedness": "R", "ScratchFreq": "1-3 Times per week"},
+    {"ID": "NS009", "Age": 19, "Gender": "F", "Height": 1.55, "Weight": 51, "Handedness": "R", "ScratchFreq": "Most Nights"},
+    {"ID": "NS010", "Age": 18, "Gender": "M", "Height": 1.80, "Weight": 74, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS011", "Age": 20, "Gender": "M", "Height": 1.63, "Weight": 54, "Handedness": "R", "ScratchFreq": "Most Nights"},
+    {"ID": "NS012", "Age": 18, "Gender": "F", "Height": 1.58, "Weight": 60, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS013", "Age": 21, "Gender": "F", "Height": 1.52, "Weight": 50, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS014", "Age": 23, "Gender": "M", "Height": 1.68, "Weight": 63, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS015", "Age": 20, "Gender": "M", "Height": 1.88, "Weight": 88, "Handedness": "R", "ScratchFreq": "Less than once per week"},
+    {"ID": "NS016", "Age": 20, "Gender": "F", "Height": 1.60, "Weight": 75, "Handedness": "R", "ScratchFreq": "Less than once per week"},
+    {"ID": "NS017", "Age": 19, "Gender": "F", "Height": 1.55, "Weight": 47, "Handedness": "R", "ScratchFreq": "1-3 Times per week"},
+    {"ID": "NS018", "Age": 20, "Gender": "M", "Height": 1.83, "Weight": 73, "Handedness": "R", "ScratchFreq": "Most Nights"},
+    {"ID": "NS019", "Age": 28, "Gender": "F", "Height": 1.64, "Weight": 55, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS020", "Age": 20, "Gender": "F", "Height": 1.71, "Weight": 56, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS021", "Age": 21, "Gender": "F", "Height": 1.75, "Weight": 68, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS022", "Age": 20, "Gender": "F", "Height": 1.70, "Weight": 55, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS023", "Age": 21, "Gender": "M", "Height": 1.78, "Weight": 73, "Handedness": "R", "ScratchFreq": "Never"},
+    {"ID": "NS024", "Age": 22, "Gender": "F", "Height": 1.60, "Weight": 40, "Handedness": "R", "ScratchFreq": "Less than once per week"},
+    {"ID": "NS025", "Age": 18, "Gender": "F", "Height": 1.65, "Weight": 55, "Handedness": "L", "ScratchFreq": "Never"},
+    {"ID": "NS026", "Age": 21, "Gender": "F", "Height": 1.68, "Weight": 63, "Handedness": "R", "ScratchFreq": "Most Nights"},
+]
+
+# Create a DataFrame
+df = pd.DataFrame(data)
+
+
+
+# In[12]:
+
+
+# --- 1) Handedness Distribution ---
+plt.figure(figsize=(4, 2.5))  # Wide and short window
+hand_counts = df["Handedness"].value_counts()
+bars = plt.barh(hand_counts.index, hand_counts.values, color="tab:blue", height=0.7)
+plt.title("Distribution of Handedness", fontsize=15)
+plt.xlabel("Count of Participants", fontsize=12)
+
+# Annotate each bar with the frequency count
+for bar in bars:
+    width = bar.get_width()
+    y = bar.get_y() + bar.get_height() / 2
+    plt.text(width + 0.2, y, str(int(width)), va='center', ha='left')
+
+plt.tight_layout()
+plt.show()
+
+
+
+
+# In[11]:
+
+
+# --- 2) Scratching Frequency Distribution ---
+plt.figure(figsize=(7, 2.5))  # Wide and short window
+scratch_counts = df["ScratchFreq"].value_counts()
+bars = plt.barh(scratch_counts.index, scratch_counts.values, color="tab:blue", height=0.7)
+plt.title("Distribution of Nocturnal Scratching Frequency", fontsize=15)
+plt.xlabel("Count of Participants", fontsize=12)
+
+# Annotate each bar with the frequency count
+for bar in bars:
+    width = bar.get_width()
+    y = bar.get_y() + bar.get_height() / 2
+    plt.text(width + 0.2, y, str(int(width)), va='center', ha='left')
+
+plt.tight_layout()
+plt.show()
+
+
+
+
+# In[5]:
+
+
+# --- 3) Gender Distribution ---
+plt.figure(figsize=(6, 4))  # Wide and short window
+gender_counts = df["Gender"].value_counts()
+bars = plt.barh(gender_counts.index, gender_counts.values, color="tab:blue", height=0.7)
+plt.title("Distribution of Gender", fontsize=15)
+plt.xlabel("Count of Participants", fontsize=12)
+
+# Annotate each bar with the frequency count
+for bar in bars:
+    width = bar.get_width()
+    y = bar.get_y() + bar.get_height() / 2
+    plt.text(width + 0.2, y, str(int(width)), va='center', ha='left')
+
+plt.tight_layout()
+plt.show()
+
+
+# In[ ]:
+
+
+
+
