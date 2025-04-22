@@ -1,0 +1,141 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[11]:
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Provide your Excel file path here:
+file_path = r"C:\Users\Chloe Cheung\OneDrive\Desktop\Jupiter\Visuals Generator\Python_Gen_Plots\Copy of Aggregate List of Activities.xlsx"
+
+# Load the selected file
+xls = pd.ExcelFile(file_path)
+
+# Assuming the first sheet contains the data
+sheet_names = xls.sheet_names
+df = xls.parse(sheet_names[0])
+
+# Rename columns using the first row as the header
+df.columns = df.iloc[0]  # Set first row as header
+df = df[1:].reset_index(drop=True)  # Remove the first row and reset index
+
+# Rename columns for easier reference
+df.columns = [
+    "ID",
+    "Type",
+    "Focus Area",
+    "Activity",
+    "ROM",
+    "Speed",
+    "Hand",
+    "Start Time",
+    "Stop Time",
+    "Time Diff",
+    "True Duration",
+]
+
+# Convert relevant columns to proper types
+df["True Duration"] = pd.to_numeric(df["True Duration"], errors="coerce")
+
+# Separate confounding and scratching activities
+confounding_df = df[df["Type"] == "Confounding"]
+scratching_df = df[df["Type"] == "Scratching"]
+
+# Aggregate frequency of confounding activities
+confounding_counts = confounding_df["Activity"].value_counts()
+
+
+# In[13]:
+
+
+# Plot bar chart of confounding activity frequencies
+plt.figure(figsize=(9, 5))
+
+ax = sns.barplot(
+    x=confounding_counts.values,
+    y=confounding_counts.index,
+    hue=confounding_counts.index,  # Hue by activity
+    palette="Blues_r",
+    legend=False,
+)
+
+plt.xlabel("Frequency")
+plt.ylabel("Confounding Activity")
+plt.title("Frequency of Confounding Activities (24 Participants)", fontsize=15)
+
+# Loop through each bar in the chart
+for p in ax.patches:
+    # p.get_width() is the bar's length (frequency value)
+    width = p.get_width()
+    # Place the text slightly to the right of the bar
+    ax.annotate(
+        f"{int(width)}",  # Convert the frequency to an integer (if needed)
+        xy=(width, p.get_y() + p.get_height() / 2),
+        xytext=(5, 0),  # A small horizontal offset to move text away from the bar
+        textcoords="offset points",
+        va="center",
+        ha="left",
+    )
+
+plt.show()
+plt.close()
+
+
+# In[19]:
+
+
+# Aggregate frequencies of unique scratching activities
+scratching_counts = (
+    scratching_df.groupby(["Focus Area", "ROM", "Speed", "Hand"])
+    .size()
+    .reset_index(name="Frequency")
+)
+
+# Create a pivot table suitable for heatmap visualization
+scratching_pivot = scratching_counts.pivot_table(
+    index=["Focus Area", "ROM"],
+    columns=["Speed", "Hand"],
+    values="Frequency",
+    fill_value=0,
+)
+
+# Plot heatmap of scratching activity frequencies
+plt.figure(figsize=(9, 6))
+sns.heatmap(
+    scratching_pivot,
+    annot=True,
+    cmap="coolwarm",
+    linewidths=0.5,
+    fmt=".0f",
+)
+plt.xlabel("Speed & Hand Used")
+plt.ylabel("Focus Area & Range of Motion")
+plt.title("Heatmap of Scratching Phenotypes (24 Participants)", fontsize=15)
+plt.show()
+
+
+
+# In[15]:
+
+
+# Create the box plot
+plt.figure(figsize=(8, 4))
+sns.boxplot(
+    x=df["Type"],
+    y=df["True Duration"],
+    palette=["tab:orange", "tab:cyan"],
+)
+plt.xlabel("Activity Type")
+plt.ylabel("Duration (seconds)")
+plt.title("Comparison of Durations:\nScratching vs. Confounding Activities")
+plt.show()
+
+
+# In[ ]:
+
+
+
+
