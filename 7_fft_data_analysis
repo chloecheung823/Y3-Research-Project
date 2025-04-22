@@ -1,0 +1,531 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[ ]:
+
+
+
+
+
+# In[2]:
+
+
+import os
+print(os.getcwd())
+
+
+# In[3]:
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
+
+df = pd.read_csv("C:/Users/Chloe Cheung/OneDrive/Desktop/Jupiter/Aggregate List of Activities with FFT Values_updated.csv")
+
+
+# In[4]:
+
+
+def compute_summary_stats(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    """
+    Groups the DataFrame by 'group_col' and computes mean, range (max-min), 
+    and standard deviation for 'FFT_Val' and 'Amplitude'.
+    """
+    summary_stats = df.groupby(group_col, observed=True).agg(
+        mean_freq=("FFT_Val", "mean"),
+        min_freq=("FFT_Val", "min"),  # custom function
+        max_freq=("FFT_Val", "max"),  # custom function
+        range=("FFT_Val", lambda x: x.max() - x.min()),  # custom function
+        std_freq=("FFT_Val", "std"),
+        
+        mean_amp=("Amplitude", "mean"),
+        min_amp=("Amplitude", "min"),  # custom function
+        max_amp=("Amplitude", "max"),  # custom function
+        range_amp=("Amplitude", lambda x: x.max() - x.min()),  # custom function
+        std_amp=("Amplitude", "std")
+    ).reset_index()
+    
+    return summary_stats
+
+
+
+# In[28]:
+
+
+# Separate confounding and scratching activities
+confounding_df = df[df["type"] == "confounding"]
+scratching_df = df[df["type"] == "scratching"]
+
+# Aggregate frequencies of unique scratching activities
+scratching_counts = (
+    scratching_df.groupby(["focus area", "range of motion", "speed", "L/R"])
+    .size()
+    .reset_index(name="Frequency") 
+)
+
+# Divide frequencies by 3
+scratching_counts["Frequency"] = scratching_counts["Frequency"] / 3
+
+# Create a pivot table suitable for heatmap visualization
+scratching_pivot = scratching_counts.pivot_table(
+    index=["focus area", "range of motion"],
+    columns=["speed", "L/R"],
+    values="Frequency",
+    fill_value=0,
+)
+
+# Plot heatmap of scratching activity frequencies
+plt.figure(figsize=(9, 6))
+sns.heatmap(
+    scratching_pivot,
+    annot=True,
+    cmap="coolwarm",
+    linewidths=0.5,
+    fmt=".0f",  # Display the divided frequencies as one-decimal floats
+)
+plt.xlabel("Speed & Hand Used")
+plt.ylabel("Focus Area & Range of Motion")
+plt.title("Heatmap of Scratching Phenotypes (5 Participants)", fontsize=15)
+plt.show()
+
+
+# In[41]:
+
+
+# Separate confounding and scratching activities
+confounding_df = df[df["type"] == "confounding"]
+scratching_df = df[df["type"] == "scratching"]
+
+# Aggregate frequency of confounding activities
+confounding_counts = confounding_df["confounding activity"].value_counts() /6
+
+# Plot bar chart of confounding activity frequencies
+plt.figure(figsize=(6.5, 2.5))
+
+ax = sns.barplot(
+    x=confounding_counts.values,
+    y=confounding_counts.index,
+    hue=confounding_counts.index,  # Hue by activity
+    palette="Blues_r",
+    legend=False,
+)
+
+plt.xlabel("Frequency")
+plt.ylabel("Confounding Activity")
+plt.title("Frequency of Confounding Activities (5 Participants)", fontsize=15)
+
+# Loop through each bar in the chart
+for p in ax.patches:
+    # p.get_width() is the bar's length (frequency value)
+    width = p.get_width()
+    # Place the text slightly to the right of the bar
+    ax.annotate(
+        f"{int(width)}",  # Convert the frequency to an integer (if needed)
+        xy=(width, p.get_y() + p.get_height() / 2),
+        xytext=(5, 0),  # A small horizontal offset to move text away from the bar
+        textcoords="offset points",
+        va="center",
+        ha="left",
+    )
+
+plt.show()
+plt.close()
+
+
+# In[35]:
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+def create_boxplots_freq_amp(
+    df: pd.DataFrame,
+    freq_col: str,
+    amp_col: str,
+    group_col: str,
+    title: str,
+    x_label: str,
+    y_label_freq: str,
+    y_label_amp: str,
+    fontsize=12,
+    figsize=(10, 5)
+):
+    """
+    Creates two side-by-side boxplots of:
+      1) freq_col (frequency) 
+      2) amp_col (amplitude)
+    grouped by group_col, annotates the median values, 
+    and filters frequencies to the range [0, 10] Hz.
+    """
+    # 1. Filter to only consider 0-10 Hz
+    df_filtered_freq = df[(df[freq_col] >= 0) & (df[freq_col] <= 10)].copy()
+
+    # 1. Filter to only consider 0-10 Hz
+    df_filtered_amp = df[(df[amp_col] >= 0) & (df[amp_col] <= 300)].copy()
+
+    # 2. Create a figure with two subplots side by side
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=figsize)
+
+    # --- Left subplot for frequency ---
+    df_filtered_freq.boxplot(column=freq_col, by=group_col, ax=axes[0])
+
+    # Calculate medians for frequency (use observed=True to silence future warning)
+    medians_freq = df_filtered_freq.groupby(group_col, observed=True)[freq_col].median()
+
+    # Annotate each box with its median value
+    for i, category in enumerate(medians_freq.index, start=1):
+        median_value = medians_freq[category]
+        # Only annotate if the median is a valid number
+        if pd.notna(median_value) and np.isfinite(median_value):
+            axes[0].text(
+                i - 0.25,
+                median_value,
+                f"{median_value:.2f}",
+                ha='right',
+                va='center',
+                color='green',
+                fontweight='bold',
+                fontsize=fontsize
+            )
+
+    axes[0].set_title(f"{title} - Frequency")
+    axes[0].set_xlabel(x_label)
+    axes[0].set_ylabel(y_label_freq)
+
+    # --- Right subplot for amplitude ---
+    df_filtered_amp.boxplot(column=amp_col, by=group_col, ax=axes[1])
+
+    # Calculate medians for amplitude (use observed=True to silence future warning)
+    medians_amp = df_filtered_amp.groupby(group_col, observed=True)[amp_col].median()
+
+    # Annotate each box with its median
+    for i, category in enumerate(medians_amp.index, start=1):
+        median_value = medians_amp[category]
+        # Only annotate if the median is a valid number
+        if pd.notna(median_value) and np.isfinite(median_value):
+            axes[1].text(
+                i - 0.25,
+                median_value,
+                f"{median_value:.2f}",
+                ha='right',
+                va='center',
+                color='green',
+                fontweight='bold',
+                fontsize=fontsize
+            )
+
+    axes[1].set_title(f"{title} - Amplitude")
+    axes[1].set_xlabel(x_label)
+    axes[1].set_ylabel(y_label_amp)
+
+    # Remove the default "Boxplot grouped by ..." supertitle
+    plt.suptitle("")
+    plt.tight_layout()
+    plt.show()
+
+    return fig, axes
+
+
+# In[8]:
+
+
+stats_by_type = compute_summary_stats(df, group_col="type")
+print(stats_by_type)
+
+
+# In[43]:
+
+
+desired_order = ["scratching","confounding"]
+df["type"] = pd.Categorical(
+    df["type"],
+    categories=desired_order,
+    ordered=True
+)
+
+create_boxplots_freq_amp(
+    df=df,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="type",             # Grouping column
+    title="Boxplots by Activity Type",
+    x_label="Focus Area",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=10,
+    figsize=(10, 3)
+)
+
+
+# In[ ]:
+
+
+
+
+
+# In[10]:
+
+
+stats_by_type = compute_summary_stats(df, group_col="focus area")
+print(stats_by_type)
+
+
+# In[32]:
+
+
+# Example call:
+
+df_filtered = df[df["focus area"].isin(["Chest", "Head", "Lower limb", "Upper limb"])]
+
+create_boxplots_freq_amp(
+    df=df_filtered,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="focus area",             # Grouping column
+    title="Boxplots by Focus Area",
+    x_label="Focus Area",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=7,
+    figsize=(10, 3)
+)
+
+
+# In[12]:
+
+
+stats_by_speed = compute_summary_stats(df, group_col="speed")
+
+print(stats_by_speed)
+
+
+# In[30]:
+
+
+# Example call:
+df_filtered = df[df["speed"].isin(["Fast", "Slow"])]
+
+create_boxplots_freq_amp(
+    df=df_filtered,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="speed",             # Grouping column
+    title="Boxplots by Intensity",
+    x_label="Intensity",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=10,
+    figsize=(10, 3)
+)
+
+
+# In[14]:
+
+
+stats_by_handedness = compute_summary_stats(df, group_col="L/R")
+
+print(stats_by_handedness)
+
+
+# In[15]:
+
+
+# Example call:
+create_boxplots_freq_amp(
+    df=df,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="L/R",             # Grouping column
+    title="Boxplots by Scratching Hand",
+    x_label="Left or Right Hand",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=10,
+    figsize=(10, 5)
+)
+
+
+# In[16]:
+
+
+stats_by_rom = compute_summary_stats(df, group_col="range of motion")
+
+print(stats_by_rom)
+
+
+# In[33]:
+
+
+# Example call:
+
+desired_order = ["High", "Medium", "Low"]
+df["range of motion"] = pd.Categorical(
+    df["range of motion"],
+    categories=desired_order,
+    ordered=True
+)
+
+df_filtered = df[df["range of motion"].isin(["High", "Medium", "Low"])]
+
+create_boxplots_freq_amp(
+    df=df_filtered,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="range of motion",             # Grouping column
+    title="Boxplots by Range of Motion",
+    x_label="Range of Motion",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=10,
+    figsize=(10, 3)
+)
+
+
+# In[18]:
+
+
+stats_by_device_name = compute_summary_stats(df, group_col=["device name","type"])
+
+print(stats_by_device_name)
+
+
+# In[29]:
+
+
+# Example call:
+df_scratching = df[df["type"] == "scratching"]
+
+create_boxplots_freq_amp(
+    df=df_scratching,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="device name",             # Grouping column
+    title="Boxplots by Device (Scratch)",
+    x_label="Device",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=10,
+    figsize=(10, 3)
+)
+
+
+# In[20]:
+
+
+# Example call:
+df_scratching = df[df["type"] == "confounding"]
+
+create_boxplots_freq_amp(
+    df=df_scratching,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="device name",             # Grouping column
+    title="Boxplots by Device (Confound)",
+    x_label="Device",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=10,
+    figsize=(10, 5)
+)
+
+
+# In[21]:
+
+
+stats_by_confounding_activity = compute_summary_stats(df, group_col="confounding activity")
+
+print(stats_by_confounding_activity)
+
+
+# In[48]:
+
+
+df["confounding activity"] = df["confounding activity"].replace({
+    "Adjust blanket and pillows": "Blanket/Pillows",
+    "Enter in and out of bed": "Bed In/Out",
+    "Toss and turn": "Toss/Turn",
+    "Scroll on phone": "Scroll Phone",
+    "Text on phone": "Text Phone"
+})
+
+desired_order = [
+    "Blanket/Pillows", 
+    "Bed In/Out",
+    "Toss/Turn",
+    "Scroll Phone", 
+    "Text Phone"
+]
+df["confounding activity"] = pd.Categorical(
+    df["confounding activity"],
+    categories=desired_order,  # must match exact spelling/casing
+    ordered=True
+)
+
+df_filtered = df[df["confounding activity"].isin([
+    "Blanket/Pillows", 
+    "Bed In/Out",
+    "Toss/Turn",
+    "Scroll Phone", 
+    "Text Phone"
+])]
+
+create_boxplots_freq_amp(
+    df=df_filtered,
+    freq_col="FFT_Val",         # Frequency column
+    amp_col="Amplitude",    # Amplitude column
+    group_col="confounding activity",             # Grouping column
+    title="Boxplots by Device (Confound)",
+    x_label="Device",
+    y_label_freq="Frequency (Hz)",
+    y_label_amp="Amplitude (N/kg)",
+    fontsize=10,
+    figsize=(14, 4)
+)
+
+
+
+# In[23]:
+
+
+import matplotlib.pyplot as plt
+
+# Define the column names for frequency and amplitude
+freq_col = "FFT_Val"
+amp_col = "Amplitude"
+
+# 1. Filter to only consider values in the desired ranges:
+#    Frequency: 0 to 10 Hz
+#    Amplitude: 0 to 300
+df_filtered = df[(df[freq_col] >= 0) & (df[freq_col] <= 10) & 
+                 (df[amp_col] >= 0) & (df[amp_col] <= 300)].copy()
+
+# Separate the filtered DataFrame by activity type
+df_scratch = df_filtered[df_filtered["type"] == "scratching"]
+df_conf = df_filtered[df_filtered["type"] == "confounding"]
+
+# Assign variables for plotting
+freq_scratch = df_scratch[freq_col]
+amp_scratch  = df_scratch[amp_col]
+
+freq_conf = df_conf[freq_col]
+amp_conf  = df_conf[amp_col]
+
+# Adjust dot size (e.g., s=50, adjust as desired)
+dot_size = 20
+
+# Create scatter plot
+plt.figure()
+plt.scatter(freq_scratch, amp_scratch, label="Scratching", s=dot_size)
+plt.scatter(freq_conf, amp_conf, label="Confounding", s=dot_size)
+plt.xlabel("Dominant Frequency (Hz)")
+plt.ylabel("Peak Amplitude")
+plt.title("Frequency vs. Amplitude: Scratching vs. Confounding")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+
